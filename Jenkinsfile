@@ -11,33 +11,31 @@ pipeline {
 
     stage('Build') {
       steps {
-        sh 'chmod +x mvnw'
-        sh './mvnw -B -V -DskipTests clean package'
+        bat 'mvnw.cmd -B -V -DskipTests clean package'
       }
       post {
-        success { archiveArtifacts artifacts: 'target/*.jar', fingerprint: true }
+        success { archiveArtifacts artifacts: 'target\\*.jar', fingerprint: true }
       }
     }
 
-    // Tag the successful build on main
     stage('Tag Build') {
-      when { branch 'main' }  // change to 'master' if your default branch is master
+      when { branch 'main' }
       steps {
         withCredentials([usernamePassword(credentialsId: 'github_push',
                                           usernameVariable: 'GIT_USER',
                                           passwordVariable: 'GIT_TOKEN')]) {
-          sh """
+          bat """
             git config user.email "ci@jenkins"
             git config user.name  "Jenkins CI"
-            git remote set-url origin https://${GIT_USER}:${GIT_TOKEN}@github.com/tthanh05/devops-petclinic.git
-            git tag -a v${VERSION} -m "CI build ${VERSION}"
-            git push origin v${VERSION}
+            git remote set-url origin https://%GIT_USER%:%GIT_TOKEN%@github.com/tthanh05/devops-petclinic.git
+            git tag -a v%VERSION% -m "CI build %VERSION%"
+            git push origin v%VERSION%
           """
         }
       }
     }
   }
   post {
-    success { echo "Build ${VERSION} archived and tagged." }
+    success { echo "Build %VERSION% archived and tagged." }
   }
 }
