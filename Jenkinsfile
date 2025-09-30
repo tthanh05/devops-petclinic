@@ -1,5 +1,6 @@
 pipeline {
   agent any
+  tools { jdk 'jdk17' }   // <— use the JDK you just configured
   options { timestamps(); buildDiscarder(logRotator(numToKeepStr: '20')) }
   environment {
     APP_NAME = 'spring-petclinic'
@@ -11,6 +12,8 @@ pipeline {
 
     stage('Build') {
       steps {
+        // Show Java version to be sure it's 17
+        bat '"%JAVA_HOME%\\bin\\java" -version'
         bat 'mvnw.cmd -B -V -DskipTests clean package'
       }
       post {
@@ -22,8 +25,7 @@ pipeline {
       when { branch 'main' }
       steps {
         withCredentials([usernamePassword(credentialsId: 'github_push',
-                                          usernameVariable: 'GIT_USER',
-                                          passwordVariable: 'GIT_TOKEN')]) {
+          usernameVariable: 'GIT_USER', passwordVariable: 'GIT_TOKEN')]) {
           bat """
             git config user.email "ci@jenkins"
             git config user.name  "Jenkins CI"
@@ -35,7 +37,5 @@ pipeline {
       }
     }
   }
-  post {
-    success { echo "Build %VERSION% archived and tagged." }
-  }
+  post { success { echo "Build %VERSION% archived and tagged." } }
 }
