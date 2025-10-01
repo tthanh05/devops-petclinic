@@ -48,7 +48,7 @@ pipeline {
 
     stage('Test: Integration') {
       steps {
-        bat "${MVN} -Dcheckstyle.skip=true -DskipITs=false failsafe:integration-test failsafe:verify"
+        bat "${MVN} -Dcheckstyle.skip=true -DskipITs=false -Djacoco.append=true failsafe:integration-test failsafe:verify"
       }
       post {
         always {
