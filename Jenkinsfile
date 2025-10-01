@@ -61,7 +61,7 @@ pipeline {
     stage('Test: Integration') {
       steps {
         // Run only integration tests (Failsafe). Skip unit tests explicitly.
-        bat "${MVN} -Dcheckstyle.skip=true -DskipTests=true -DskipITs=false failsafe:integration-test failsafe:verify"
+        bat "${MVN} -Dcheckstyle.skip=true -DskipITs=false failsafe:integration-test failsafe:verify"
       }
       post {
         // Parse Failsafe XML reports (integration tests)
