@@ -226,24 +226,42 @@ pipeline {
           echo "⛔ Deploy failed; rollback attempted via tag ${PREV_IMAGE_TAG}."
         }
         always {
-          bat "docker ps --format \"table {{.Names}}\\t{{.Image}}\\t{{.Status}}\\t{{.Ports}}\""
-          bat "docker compose -f %DOCKER_COMPOSE_FILE% ps"
-          // Robust: no error if the stack failed to start
-          always {
-            bat 'docker ps --format "table {{.Names}}\\t{{.Image}}\\t{{.Status}}\\t{{.Ports}}"'
-            bat "docker compose -f %DOCKER_COMPOSE_FILE% ps"
-            // Robust: no error if the stack failed to start
-            powershell('''
-              $ids = docker compose -f $env:DOCKER_COMPOSE_FILE ps -q
-              if ($ids) {
-                foreach ($i in $ids) {
-                  docker logs --since=10m $i | Out-File -FilePath ("deploy-logs-" + $i + ".txt") -Encoding utf8
-                }
-              } else {
-                Write-Host "No compose containers to collect logs from."
-              }
-            ''')
-            archiveArtifacts artifacts: 'docker-ps.txt, compose-ps.txt, deploy-logs-*.txt', allowEmptyArchive: true
+        // One PowerShell block writes all evidence files safely to the workspace
+        powershell('''
+          Set-StrictMode -Version Latest
+    
+          # 1) docker ps snapshot
+          try {
+            docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}" `
+              | Out-File -FilePath "docker-ps.txt" -Encoding utf8
+          } catch {
+            "docker ps failed: $($_.Exception.Message)" | Out-File -FilePath "docker-ps.txt" -Encoding utf8
+          }
+    
+          # 2) docker compose ps snapshot (using env var path)
+          try {
+            docker compose -f "$env:DOCKER_COMPOSE_FILE" ps `
+              | Out-File -FilePath "compose-ps.txt" -Encoding utf8
+          } catch {
+            "docker compose ps failed: $($_.Exception.Message)" | Out-File -FilePath "compose-ps.txt" -Encoding utf8
+          }
+    
+          # 3) last 15 minutes of logs for known service names (create file even if missing)
+          $names = @("petclinic-app","petclinic-db")
+          foreach ($n in $names) {
+            try {
+              docker logs --since=15m $n `
+                | Out-File -FilePath ("deploy-logs-" + $n + ".txt") -Encoding utf8
+            } catch {
+              ("no logs available for " + $n + ": " + $($_.Exception.Message)) `
+                | Out-File -FilePath ("deploy-logs-" + $n + ".txt") -Encoding utf8
+            }
+          }
+        ''')
+    
+        // Archive whatever was produced (will not fail if any are empty/missing)
+        archiveArtifacts artifacts: 'docker-ps.txt, compose-ps.txt, deploy-logs-*.txt, health-check.log',
+                         allowEmptyArchive: true
 }
 
           archiveArtifacts artifacts: 'deploy-logs-*.txt', allowEmptyArchive: true
