@@ -20,7 +20,7 @@
     <java.version>17</java.version>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
-    <!-- Important for reproducible builds. Update using e.g. ./mvnw versions:set -DnewVersion=... -->
+    <!-- Important for reproducible builds -->
     <project.build.outputTimestamp>2024-11-28T14:37:52Z</project.build.outputTimestamp>
 
     <!-- Web dependencies -->
@@ -182,6 +182,7 @@
         </executions>
       </plugin>
 
+      <!-- Tighter Checkstyle scope to avoid scanning generated/target files -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-checkstyle-plugin</artifactId>
@@ -207,9 +208,11 @@
             <phase>validate</phase>
             <configuration>
               <configLocation>src/checkstyle/nohttp-checkstyle.xml</configLocation>
-              <sourceDirectories>${basedir}</sourceDirectories>
+              <!-- Only check sources -->
+              <sourceDirectories>${basedir}/src</sourceDirectories>
               <includes>**/*</includes>
-              <excludes>**/.git/**/*,**/.idea/**/*,**/target/**/,**/.flattened-pom.xml,**/*.class</excludes>
+              <!-- Exclude build output & VCS/IDE dirs -->
+              <excludes>**/.git/**,**/.idea/**,**/target/**,**/.flattened-pom.xml,**/*.class</excludes>
               <propertyExpansion>config_loc=${basedir}/src/checkstyle/</propertyExpansion>
             </configuration>
           </execution>
@@ -226,8 +229,6 @@
         <artifactId>spring-boot-maven-plugin</artifactId>
         <executions>
           <execution>
-            <!-- Spring Boot Actuator displays build-related information
-                 if a META-INF/build-info.properties file is present -->
             <goals>
               <goal>build-info</goal>
             </goals>
@@ -243,8 +244,7 @@
         </executions>
       </plugin>
 
-      <!-- ===================== NEW: UNIT vs INTEGRATION & COVERAGE ===================== -->
-
+      <!-- ===================== UNIT vs INTEGRATION & COVERAGE ===================== -->
       <!-- Unit tests: run only *Test.java via Surefire -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
@@ -306,11 +306,8 @@
           </execution>
         </executions>
       </plugin>
+      <!-- ====================================================================== -->
 
-      <!-- ============================================================================== -->
-
-      <!-- Spring Boot Actuator displays build-related information if a git.properties file is
-           present at the classpath -->
       <plugin>
         <groupId>io.github.git-commit-id</groupId>
         <artifactId>git-commit-id-maven-plugin</artifactId>
@@ -320,8 +317,6 @@
         </configuration>
       </plugin>
 
-      <!-- Spring Boot Actuator displays sbom-related information if a CycloneDX SBOM file is
-           present at the classpath -->
       <plugin>
         <?m2e ignore?>
         <groupId>org.cyclonedx</groupId>
@@ -438,7 +433,6 @@
       <build>
         <pluginManagement>
           <plugins>
-            <!-- This plugin's configuration is used to store Eclipse m2e settings only. It has no influence on the Maven build itself. -->
             <plugin>
               <groupId>org.eclipse.m2e</groupId>
               <artifactId>lifecycle-mapping</artifactId>
