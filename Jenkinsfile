@@ -59,6 +59,36 @@ pipeline {
       }
     }
 
+    stage('Code Quality: SonarQube') {
+      environment {
+        // If you defined a global token in Jenkins Sonar Server config, you might not need SONAR_TOKEN here.
+        // If you use a per-project token, bind it like below:
+      }
+      steps {
+        withSonarQubeEnv('sonarqube-lts') { // <-- must match the name in Jenkins > Manage Jenkins > SonarQube servers
+          withCredentials([string(credentialsId: 'sonar_token', variable: 'SONAR_TOKEN')]) {
+            // Include pull request props if building a PR; otherwise omit those lines
+            bat """
+              ${MVN} -DskipTests=true ^
+                    -Dsonar.login=%SONAR_TOKEN% ^
+                    sonar:sonar
+            """
+          }
+        }
+      }
+    }
+
+    stage('Quality Gate') {
+      steps {
+        timeout(time: 10, unit: 'MINUTES') {
+          // Requires Jenkins SonarQube Scanner plugin + Webhook from SonarQube -> 	http://host.docker.internal:8092/sonarqube-webhook/
+          waitForQualityGate abortPipeline: true
+        }
+      }
+    }
+
+
+
     stage('Coverage Report') {
       steps {
         bat "${MVN} -Dcheckstyle.skip=true jacoco:report"
