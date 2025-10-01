@@ -61,18 +61,26 @@ pipeline {
 
     stage('Code Quality: SonarQube') {
       steps {
-        withSonarQubeEnv('sonarqube-server') { // <-- must match the name in Jenkins > Manage Jenkins > SonarQube servers
+        withSonarQubeEnv('sonarqube-server') {
           withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
-            // Include pull request props if building a PR; otherwise omit those lines
             bat """
               ${MVN} -DskipTests=true ^
-                    -Dsonar.login=%SONAR_TOKEN% ^
-                    sonar:sonar
+                     -Dsonar.login=%SONAR_TOKEN% ^
+                     -Dsonar.working.directory=.scannerwork ^
+                     sonar:sonar
             """
+            REM Show current directory and the hidden folder
+            bat 'cd'
+            bat 'dir /a .scannerwork'
+            REM Prove the task file exists and show its content (contains the task id & server url)
+            bat 'type .scannerwork\\report-task.txt'
           }
         }
+        // Keep a copy with the build for proof / inspection
+        archiveArtifacts artifacts: '.scannerwork/**', fingerprint: false, allowEmptyArchive: true
       }
     }
+
 
     stage('Quality Gate') {
       steps {
