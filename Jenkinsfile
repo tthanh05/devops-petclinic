@@ -63,23 +63,30 @@ pipeline {
       steps {
         withSonarQubeEnv('sonarqube-server') {
           withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+    
+            // Run scanner and pin the working dir to the workspace root
             bat """
               ${MVN} -DskipTests=true ^
                      -Dsonar.login=%SONAR_TOKEN% ^
                      -Dsonar.working.directory=.scannerwork ^
                      sonar:sonar
             """
-            REM Show current directory and the hidden folder
+    
+            // Diagnostics: show cwd, list hidden .scannerwork, and print the task file
             bat 'cd'
             bat 'dir /a .scannerwork'
-            REM Prove the task file exists and show its content (contains the task id & server url)
             bat 'type .scannerwork\\report-task.txt'
+    
+            // OPTIONAL: if multi-module, find any .scannerwork folders recursively
+            // (Double % is required inside Jenkins bat files)
+            bat 'for /d /r %%i in (.scannerwork) do @echo FOUND: %%i'
           }
         }
-        // Keep a copy with the build for proof / inspection
+        // Keep the scanner artifacts with the build for evidence
         archiveArtifacts artifacts: '.scannerwork/**', fingerprint: false, allowEmptyArchive: true
       }
     }
+
 
 
     stage('Quality Gate') {
