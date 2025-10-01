@@ -13,8 +13,16 @@ pipeline {
     APP_NAME = 'spring-petclinic'
     GIT_SHA  = "${env.GIT_COMMIT?.take(7) ?: 'local'}"
     VERSION  = "${env.BUILD_NUMBER}-${GIT_SHA}"
-    // Cache for OWASP Dependency-Check (faster repeated runs)
     DC_CACHE = '.dc'
+
+    // --- Deploy/Staging config ---
+    DOCKER_COMPOSE_FILE = 'docker-compose.staging.yml'
+    STAGING_IMAGE_TAG   = 'staging'      // moving tag used by compose
+    PREV_IMAGE_TAG      = 'staging-prev' // rollback tag
+    // Switched to 8085 (host + container)
+    HEALTH_URL          = 'http://localhost:8085/actuator/health'
+    HEALTH_MAX_WAIT_SEC = '120'
+    HEALTH_INTERVAL_SEC = '5'
   }
 
   stages {
@@ -50,7 +58,6 @@ pipeline {
 
     stage('Test: Integration') {
       steps {
-        // append=true lets JaCoCo merge IT coverage with unit coverage later
         bat "${MVN} -Dcheckstyle.skip=true -DskipITs=false -Djacoco.append=true failsafe:integration-test failsafe:verify"
       }
       post {
@@ -62,12 +69,7 @@ pipeline {
       }
     }
 
-    /* -------------------- SECURITY (SCA) --------------------
-     * OWASP Dependency-Check scans all dependencies for known CVEs.
-     * - Fails the build on CVSS >= 7 (you can tune this).
-     * - Uses a suppression file for documented false positives.
-     * - Publishes HTML + JUnit reports and archives raw outputs.
-     * ------------------------------------------------------ */
+    /* -------------------- SECURITY (SCA) -------------------- */
     stage('Security: Dependency Scan (OWASP)') {
       steps {
         bat """
@@ -77,12 +79,11 @@ pipeline {
                  -Dformat=ALL ^
                  -DfailBuildOnCVSS=7 ^
                  -Danalyzers.assembly.enabled=false ^
-                 -DautoUpdate=true 
+                 -DautoUpdate=true
         """
       }
       post {
         always {
-          // Keep everything for audit
           archiveArtifacts artifacts: '''
             target/dependency-check-report.html,
             target/dependency-check-report.xml,
@@ -90,7 +91,6 @@ pipeline {
             target/dependency-check-junit.xml
           '''.trim().replaceAll("\\s+", " "), fingerprint: true, allowEmptyArchive: true
 
-          // Nice HTML report on the build page
           publishHTML(target: [
             reportDir: 'target',
             reportFiles: 'dependency-check-report.html',
@@ -99,16 +99,14 @@ pipeline {
             allowMissing: false,
             alwaysLinkToLastBuild: false
           ])
-          // Archive everything for evidence
           archiveArtifacts artifacts: 'target/dependency-check-report/**, target/dependency-check-json*', allowEmptyArchive: true
-          // Also surface as a test-like report so it’s visible in Jenkins UI
           junit testResults: 'target/dependency-check-junit.xml', allowEmptyResults: true
         }
         failure {
-          echo '❌ High severity CVEs detected (CVSS >= 7). See "OWASP Dependency-Check" report and mitigation notes.'
+          echo '❌ High severity CVEs detected (CVSS >= 7).'
         }
         unsuccessful {
-          echo '⚠️ Review Dependency-Check results. Use the suppression file ONLY for genuine false-positives with justification.'
+          echo '⚠️ Review Dependency-Check results; only suppress genuine false positives.'
         }
       }
     }
@@ -116,12 +114,10 @@ pipeline {
     /* -------------------- CODE QUALITY (SonarQube) -------------------- */
     stage('Code Quality: SonarQube') {
       steps {
-        // Make sure the XML exists for coverage
         bat "${MVN} -Dcheckstyle.skip=true jacoco:report"
 
         withSonarQubeEnv('sonarqube-server') {
           withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
-
             bat """
               ${MVN} -DskipTests=true ^
                      -Dsonar.login=%SONAR_TOKEN% ^
@@ -129,12 +125,7 @@ pipeline {
                      -Dsonar.projectVersion=%BUILD_NUMBER% ^
                      sonar:sonar
             """
-
-            // Diagnostics to tie CE task to this build
-            bat 'cd'
-            bat 'dir /a .scannerwork'
             bat 'type .scannerwork\\report-task.txt'
-            bat 'for /d /r %%i in (.scannerwork) do @echo FOUND: %%i'
           }
         }
         archiveArtifacts artifacts: '.scannerwork/**', fingerprint: false, allowEmptyArchive: true
@@ -144,7 +135,6 @@ pipeline {
     stage('Quality Gate') {
       steps {
         timeout(time: 10, unit: 'MINUTES') {
-          // Webhook should be set to http://host.docker.internal:8092/sonarqube-webhook/ (your Jenkins port)
           waitForQualityGate abortPipeline: true
         }
       }
@@ -178,14 +168,78 @@ pipeline {
         }
       }
     }
+
+    /* ==================== DEPLOY (Infra-as-Code + Rollback) ==================== */
+    stage('Deploy: Staging (Docker Compose on 8085 with Health Gate + Rollback)') {
+      steps {
+        bat 'docker --version'
+        bat 'docker compose version'
+
+        bat """
+          REM --- Preserve previous staging image for rollback (if it exists)
+          for /f "tokens=*" %%i in ('docker images -q %APP_NAME%:%STAGING_IMAGE_TAG%') do (
+            docker image tag %APP_NAME%:%STAGING_IMAGE_TAG% %APP_NAME%:%PREV_IMAGE_TAG%
+          )
+
+          REM --- Build new versioned image and retag to 'staging'
+          docker build -t %APP_NAME%:%VERSION% -f Dockerfile .
+          docker image tag %APP_NAME%:%VERSION% %APP_NAME%:%STAGING_IMAGE_TAG%
+        """
+
+        // Deploy (or update) via compose
+        bat "docker compose -f %DOCKER_COMPOSE_FILE% up -d --remove-orphans"
+
+        // Health gate against host-exposed 8085
+        powershell """
+          \$max = [int]$env:HEALTH_MAX_WAIT_SEC
+          \$interval = [int]$env:HEALTH_INTERVAL_SEC
+          \$ok = \$false
+          Write-Host "Waiting up to \$max sec for health at $env:HEALTH_URL ..."
+          for (\$t = 0; \$t -lt \$max; \$t += \$interval) {
+            try {
+              \$resp = Invoke-WebRequest -Uri $env:HEALTH_URL -UseBasicParsing -TimeoutSec 5
+              if (\$resp.StatusCode -ge 200 -and \$resp.StatusCode -lt 300) {
+                Write-Host "Health OK (HTTP \$($resp.StatusCode))"
+                \$ok = \$true; break
+              }
+            } catch {
+              Start-Sleep -Seconds \$interval
+              continue
+            }
+            Start-Sleep -Seconds \$interval
+          }
+          if (-not \$ok) {
+            Write-Host "Health check FAILED. Rolling back to previous image tag..."
+            docker image tag $env:APP_NAME:$env:PREV_IMAGE_TAG $env:APP_NAME:$env:STAGING_IMAGE_TAG
+            docker compose -f $env:DOCKER_COMPOSE_FILE up -d --remove-orphans
+            throw "Deploy failed health gate; rolled back to previous image."
+          }
+        """
+      }
+      post {
+        success {
+          echo "✅ Staging healthy at ${HEALTH_URL}. Image: ${APP_NAME}:${VERSION} (tag=${STAGING_IMAGE_TAG})."
+          archiveArtifacts artifacts: "${DOCKER_COMPOSE_FILE}", fingerprint: true, allowEmptyArchive: false
+        }
+        failure {
+          echo "⛔ Deploy failed; rollback attempted via tag ${PREV_IMAGE_TAG}."
+        }
+        always {
+          bat "docker ps --format \"table {{.Names}}\\t{{.Image}}\\t{{.Status}}\\t{{.Ports}}\""
+          bat "docker compose -f %DOCKER_COMPOSE_FILE% ps"
+          bat "for /f \"skip=1\" %%i in ('docker compose -f %DOCKER_COMPOSE_FILE% ps -q') do @docker logs --since=10m %%i > deploy-logs-%%i.txt 2>&1"
+          archiveArtifacts artifacts: 'deploy-logs-*.txt', allowEmptyArchive: true
+        }
+      }
+    }
   }
 
   post {
     success {
-      echo "Build ${VERSION} archived, tests passed, coverage published, security scan clean (or justified), and tag pushed (if main)."
+      echo "Build ${VERSION} passed all gates and deployed to staging on 8085."
     }
     failure {
-      echo "Build ${VERSION} failed. If failure happened in Tag Build, check credential type/binding."
+      echo "Build ${VERSION} failed. If failure is in Tag/Deploy, check credentials/Docker/health gate."
     }
   }
 }
