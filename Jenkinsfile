@@ -190,31 +190,31 @@ pipeline {
         bat "docker compose -f %DOCKER_COMPOSE_FILE% up -d --remove-orphans"
 
         // Health gate against host-exposed 8085
-        powershell """
-          \$max = [int]$env:HEALTH_MAX_WAIT_SEC
-          \$interval = [int]$env:HEALTH_INTERVAL_SEC
-          \$ok = \$false
-          Write-Host "Waiting up to \$max sec for health at $env:HEALTH_URL ..."
-          for (\$t = 0; \$t -lt \$max; \$t += \$interval) {
+        powershell('''
+          $max = [int]$env:HEALTH_MAX_WAIT_SEC
+          $interval = [int]$env:HEALTH_INTERVAL_SEC
+          $ok = $false
+          Write-Host "Waiting up to $max sec for health at $($env:HEALTH_URL) ..."
+          for ($t = 0; $t -lt $max; $t += $interval) {
             try {
-              \$resp = Invoke-WebRequest -Uri $env:HEALTH_URL -UseBasicParsing -TimeoutSec 5
-              if (\$resp.StatusCode -ge 200 -and \$resp.StatusCode -lt 300) {
-                Write-Host "Health OK (HTTP \$($resp.StatusCode))"
-                \$ok = \$true; break
+              $resp = Invoke-WebRequest -Uri $env:HEALTH_URL -UseBasicParsing -TimeoutSec 5
+              if ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 300) {
+                Write-Host "Health OK (HTTP $($resp.StatusCode))"
+                $ok = $true; break
               }
             } catch {
-              Start-Sleep -Seconds \$interval
+              Start-Sleep -Seconds $interval
               continue
             }
-            Start-Sleep -Seconds \$interval
+            Start-Sleep -Seconds $interval
           }
-          if (-not \$ok) {
+          if (-not $ok) {
             Write-Host "Health check FAILED. Rolling back to previous image tag..."
             docker image tag $env:APP_NAME:$env:PREV_IMAGE_TAG $env:APP_NAME:$env:STAGING_IMAGE_TAG
             docker compose -f $env:DOCKER_COMPOSE_FILE up -d --remove-orphans
             throw "Deploy failed health gate; rolled back to previous image."
           }
-        """
+        ''')
       }
       post {
         success {
@@ -228,12 +228,23 @@ pipeline {
           bat "docker ps --format \"table {{.Names}}\\t{{.Image}}\\t{{.Status}}\\t{{.Ports}}\""
           bat "docker compose -f %DOCKER_COMPOSE_FILE% ps"
           // Robust: no error if the stack failed to start
-          powershell """
-            \$ids = docker compose -f $env:DOCKER_COMPOSE_FILE ps -q
-            foreach (\$i in \$ids) {
-              docker logs --since=10m \$i | Out-File -FilePath deploy-logs-\$i.txt -Encoding utf8
-            }
-          """
+          always {
+            bat 'docker ps --format "table {{.Names}}\\t{{.Image}}\\t{{.Status}}\\t{{.Ports}}"'
+            bat "docker compose -f %DOCKER_COMPOSE_FILE% ps"
+            // Robust: no error if the stack failed to start
+            powershell('''
+              $ids = docker compose -f $env:DOCKER_COMPOSE_FILE ps -q
+              if ($ids) {
+                foreach ($i in $ids) {
+                  docker logs --since=10m $i | Out-File -FilePath ("deploy-logs-" + $i + ".txt") -Encoding utf8
+                }
+              } else {
+                Write-Host "No compose containers to collect logs from."
+              }
+            ''')
+  archiveArtifacts artifacts: 'deploy-logs-*.txt', allowEmptyArchive: true
+}
+
           archiveArtifacts artifacts: 'deploy-logs-*.txt', allowEmptyArchive: true
         }
       }
