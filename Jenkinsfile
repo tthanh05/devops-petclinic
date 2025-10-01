@@ -1,97 +1,121 @@
 pipeline {
   agent any
-  tools { jdk 'jdk17' }
-  options { timestamps(); buildDiscarder(logRotator(numToKeepStr: '20')) }
+
+  tools { jdk 'jdk17' }   // Use the JDK tool you defined in Jenkins (matches your logs)
+
+  options {
+    timestamps()
+    buildDiscarder(logRotator(numToKeepStr: '20'))
+  }
 
   environment {
-    APP_NAME   = 'spring-petclinic'
-    GIT_SHA    = "${env.GIT_COMMIT?.take(7) ?: 'local'}"
-    VERSION    = "${env.BUILD_NUMBER}-${GIT_SHA}"
-    MAVEN_REPO = ".m2\\repo"   // local cache to speed up builds on Windows agent
+    // Reusable bits for Windows agent + Maven Wrapper
+    MVN = 'mvnw.cmd -B -V --no-transfer-progress -Dmaven.repo.local=.m2\\repo'
+    APP_NAME = 'spring-petclinic'
+    GIT_SHA  = "${env.GIT_COMMIT?.take(7) ?: 'local'}"
+    VERSION  = "${env.BUILD_NUMBER}-${GIT_SHA}"
   }
 
   stages {
+
     stage('Checkout') {
-      steps { checkout scm }
+      steps {
+        checkout scm
+      }
     }
 
     stage('Build') {
       steps {
+        // Prove correct Java toolchain in logs
         bat '"%JAVA_HOME%\\bin\\java" -version'
-        // Auto-format code so 'validate' won’t fail on style
-        bat 'mvnw.cmd -B -V -Dmaven.repo.local=%MAVEN_REPO% --no-transfer-progress spring-javaformat:apply'
-        // Build (skip checkstyle here; we enforce style in Code Quality later)
-        bat 'mvnw.cmd -B -V -DskipTests -Dcheckstyle.skip=true -Dmaven.repo.local=%MAVEN_REPO% --no-transfer-progress clean package'
+
+        // Keep formatting consistent (you used this in earlier runs)
+        bat "${MVN} spring-javaformat:apply"
+
+        // Fast packaging; tests run in dedicated stages below
+        bat "${MVN} -DskipTests -Dcheckstyle.skip=true clean package"
       }
       post {
         success {
+          // Archive the built JAR and fingerprint it (traceability)
           archiveArtifacts artifacts: 'target\\*.jar', fingerprint: true
         }
       }
     }
 
-    // ---------- Test: Unit (Surefire runs **/*Test.java) ----------
     stage('Test: Unit') {
       steps {
-        bat 'mvnw.cmd -B -Dcheckstyle.skip=true -Dmaven.repo.local=%MAVEN_REPO% -DskipITs=true --no-transfer-progress test'
+        // Run only unit tests (Surefire). Skip ITs explicitly.
+        bat "${MVN} -Dcheckstyle.skip=true -DskipITs=true test"
       }
       post {
+        // Parse Surefire XML reports (unit tests)
         always {
-          junit 'target\\surefire-reports\\*.xml'   // fails the build if unit tests failed
+          junit testResults: 'target/surefire-reports/*.xml',
+                keepLongStdio: true,
+                allowEmptyResults: false
         }
       }
     }
 
-    // ---------- Test: Integration (Failsafe runs **/*IT.java) ----------
     stage('Test: Integration') {
       steps {
-        // Boots a real Spring context (your *IT.java tests use @SpringBootTest).
-        bat 'mvnw.cmd -B -Dcheckstyle.skip=true -Dmaven.repo.local=%MAVEN_REPO% -DskipITs=false --no-transfer-progress failsafe:integration-test failsafe:verify'
+        // Run only integration tests (Failsafe). Skip unit tests explicitly.
+        bat "${MVN} -Dcheckstyle.skip=true -DskipTests=true -DskipITs=false failsafe:integration-test failsafe:verify"
       }
       post {
+        // Parse Failsafe XML reports (integration tests)
         always {
-          junit 'target\\failsafe-reports\\*.xml'   // fails the build if any IT failed
+          junit testResults: 'target/failsafe-reports/*.xml',
+                keepLongStdio: true,
+                allowEmptyResults: false
         }
       }
     }
 
-    // ---------- Coverage HTML (JaCoCo) ----------
     stage('Coverage Report') {
       steps {
-        // JaCoCo report also runs during 'verify', but this ensures HTML is present.
-        bat 'mvnw.cmd -B -Dcheckstyle.skip=true -Dmaven.repo.local=%MAVEN_REPO% --no-transfer-progress jacoco:report'
-      }
-      post {
-        always {
-          publishHTML(target: [
-            reportDir : 'target\\site\\jacoco',
-            reportFiles: 'index.html',
-            reportName : 'JaCoCo Coverage'
-          ])
-        }
+        // Generate JaCoCo HTML report from jacoco.exec produced during tests
+        bat "${MVN} -Dcheckstyle.skip=true jacoco:report"
+
+        // Publish JaCoCo HTML to the build page
+        publishHTML(target: [
+          reportDir: 'target/site/jacoco',
+          reportFiles: 'index.html',
+          reportName: 'JaCoCo Coverage',
+          keepAll: true,
+          allowMissing: false,
+          alwaysLinkToLastBuild: false
+        ])
       }
     }
 
-    // ---------- Tag only successful main builds ----------
     stage('Tag Build') {
-      when { branch 'main' }
+      when { branch 'main' }  // Only tag on main
+      environment {
+        // You should have a secret text credential named GIT_TOKEN in Jenkins
+        GIT_HTTPS = "https://tthanh05:${GIT_TOKEN}@github.com/tthanh05/devops-petclinic.git"
+      }
       steps {
-        withCredentials([usernamePassword(credentialsId: 'github_push',
-                                          usernameVariable: 'GIT_USER',
-                                          passwordVariable: 'GIT_TOKEN')]) {
-          bat """
+        withCredentials([string(credentialsId: 'github_push_token', variable: 'GIT_TOKEN')]) {
+          bat '''
             git config user.email "ci@jenkins"
             git config user.name  "Jenkins CI"
-            git remote set-url origin https://%GIT_USER%:%GIT_TOKEN%@github.com/tthanh05/devops-petclinic.git
-            git tag -a v%BUILD_NUMBER%-%GIT_COMMIT:~0,7% -m "CI build %BUILD_NUMBER% (%GIT_COMMIT:~0,7%)"
+            git remote set-url origin %GIT_HTTPS%
+            git tag -a v%BUILD_NUMBER%-%GIT_SHA% -m "CI build %BUILD_NUMBER% (%GIT_SHA%)"
             git push origin --tags
-          """
+          '''
         }
       }
     }
   }
 
   post {
-    success { echo "Build ${VERSION} archived, tests passed, coverage published, and tag pushed (if main)." }
+    success {
+      echo "Build ${VERSION} archived, tests passed, coverage published, and tag pushed (if main)."
+    }
+    failure {
+      echo "Build ${VERSION} failed. Check unit/IT report parsing (folders: surefire-reports / failsafe-reports)."
+    }
   }
 }
