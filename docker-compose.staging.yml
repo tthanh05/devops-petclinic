@@ -1,0 +1,43 @@
+version: "3.9"
+
+services:
+  db:
+    image: mysql:8.0
+    container_name: petclinic-db
+    command: --default-authentication-plugin=mysql_native_password --lower_case_table_names=1
+    environment:
+      MYSQL_DATABASE: petclinic
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_USER: pet
+      MYSQL_PASSWORD: pet
+    ports:
+      - "3306:3306"
+    volumes:
+      - petclinic_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  app:
+    image: spring-petclinic:staging
+    container_name: petclinic-app
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://db:3306/petclinic?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      SPRING_DATASOURCE_USERNAME: pet
+      SPRING_DATASOURCE_PASSWORD: pet
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,info
+      SERVER_PORT: "8085"
+    ports:
+      - "8085:8085"
+    # NOTE: we rely on Jenkins' external health gate at :8085,
+    # so we don't declare an app-level healthcheck here
+    # (the base image doesn't ship curl/wget by default).
+
+volumes:
+  petclinic_mysql_data:
