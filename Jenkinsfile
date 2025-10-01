@@ -227,7 +227,13 @@ pipeline {
         always {
           bat "docker ps --format \"table {{.Names}}\\t{{.Image}}\\t{{.Status}}\\t{{.Ports}}\""
           bat "docker compose -f %DOCKER_COMPOSE_FILE% ps"
-          bat "for /f \"skip=1\" %%i in ('docker compose -f %DOCKER_COMPOSE_FILE% ps -q') do @docker logs --since=10m %%i > deploy-logs-%%i.txt 2>&1"
+          // Robust: no error if the stack failed to start
+          powershell """
+            \$ids = docker compose -f $env:DOCKER_COMPOSE_FILE ps -q
+            foreach (\$i in \$ids) {
+              docker logs --since=10m \$i | Out-File -FilePath deploy-logs-\$i.txt -Encoding utf8
+            }
+          """
           archiveArtifacts artifacts: 'deploy-logs-*.txt', allowEmptyArchive: true
         }
       }
