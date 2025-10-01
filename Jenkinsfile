@@ -61,6 +61,9 @@ pipeline {
 
     stage('Code Quality: SonarQube') {
       steps {
+        // make sure the XML exists
+        bat "${MVN} -Dcheckstyle.skip=true jacoco:report"
+        
         withSonarQubeEnv('sonarqube-server') {
           withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
     
