@@ -214,6 +214,7 @@ pipeline {
             docker compose -f $env:DOCKER_COMPOSE_FILE up -d --remove-orphans
             throw "Deploy failed health gate; rolled back to previous image."
           }
+          "Health OK" | Tee-Object -FilePath health-check.log -Append
         ''')
       }
       post {
@@ -242,7 +243,7 @@ pipeline {
                 Write-Host "No compose containers to collect logs from."
               }
             ''')
-  archiveArtifacts artifacts: 'deploy-logs-*.txt', allowEmptyArchive: true
+            archiveArtifacts artifacts: 'docker-ps.txt, compose-ps.txt, deploy-logs-*.txt', allowEmptyArchive: true
 }
 
           archiveArtifacts artifacts: 'deploy-logs-*.txt', allowEmptyArchive: true
