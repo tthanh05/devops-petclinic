@@ -45,7 +45,7 @@ pipeline {
 
     stage('Test: Integration') {
       steps {
-        bat "${env.MVN} -Dcheckstyle.skip=true -DskipTests=true -DskipITs=false failsafe:integration-test failsafe:verify"
+        bat "${env.MVN} -Dcheckstyle.skip=true -DskipITs=false failsafe:integration-test failsafe:verify"
       }
       post {
         always {
@@ -79,7 +79,7 @@ pipeline {
         expression { fileExists('sonar-project.properties') }
       }
       steps {
-        withSonarQubeEnv('SonarLocal-8094') {
+        withSonarQubeEnv('SonarLocal-9000') {
           bat "${env.MVN} -DskipTests -Dcheckstyle.skip=true sonar:sonar"
         }
       }
