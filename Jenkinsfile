@@ -262,13 +262,9 @@ pipeline {
         // Archive whatever was produced (will not fail if any are empty/missing)
         archiveArtifacts artifacts: 'docker-ps.txt, compose-ps.txt, deploy-logs-*.txt, health-check.log',
                          allowEmptyArchive: true
-}
-
-          archiveArtifacts artifacts: 'deploy-logs-*.txt', allowEmptyArchive: true
-        }
       }
     }
-  }
+    }
 
   post {
     success {
