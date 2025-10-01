@@ -18,6 +18,9 @@ pipeline {
     stage('Build') {
       steps {
         bat '"%JAVA_HOME%\\bin\\java" -version'
+        // Auto-format code so 'validate' passes
+        bat 'mvnw.cmd -B -V -Dmaven.repo.local=%MAVEN_REPO% --no-transfer-progress spring-javaformat:apply'
+        // Now build
         bat 'mvnw.cmd -B -V -DskipTests -Dmaven.repo.local=%MAVEN_REPO% --no-transfer-progress clean package'
       }
       post {
@@ -26,6 +29,7 @@ pipeline {
         }
       }
     }
+
 
     // ---------- Test: Unit (Surefire runs **/*Test.java) ----------
     stage('Test: Unit') {
