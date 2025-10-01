@@ -77,8 +77,7 @@ pipeline {
                  -Dformat=ALL ^
                  -DfailBuildOnCVSS=7 ^
                  -Danalyzers.assembly.enabled=false ^
-                 -DautoUpdate=true ^
-                 -DsuppressionFile=dependency-check-suppressions.xml
+                 -DautoUpdate=true 
         """
       }
       post {
