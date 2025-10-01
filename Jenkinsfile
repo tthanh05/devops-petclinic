@@ -61,7 +61,7 @@ pipeline {
 
     stage('Code Quality: SonarQube') {
       steps {
-        withSonarQubeEnv('sonarqube-lts') { // <-- must match the name in Jenkins > Manage Jenkins > SonarQube servers
+        withSonarQubeEnv('sonarqube-server') { // <-- must match the name in Jenkins > Manage Jenkins > SonarQube servers
           withCredentials([string(credentialsId: 'sonar_token', variable: 'SONAR_TOKEN')]) {
             // Include pull request props if building a PR; otherwise omit those lines
             bat """
