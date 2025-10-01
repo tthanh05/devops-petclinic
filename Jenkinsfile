@@ -46,7 +46,7 @@ pipeline {
     stage('Test: Integration') {
       steps {
         // Boots a real Spring context (your *IT.java tests use @SpringBootTest).
-        bat 'mvnw.cmd -B -Dcheckstyle.skip=true -Dmaven.repo.local=%MAVEN_REPO% -DskipTests=true -DskipITs=false --no-transfer-progress failsafe:integration-test failsafe:verify'
+        bat 'mvnw.cmd -B -Dcheckstyle.skip=true -Dmaven.repo.local=%MAVEN_REPO% -DskipITs=false --no-transfer-progress failsafe:integration-test failsafe:verify'
       }
       post {
         always {
