@@ -1,121 +1,109 @@
 pipeline {
   agent any
-
-  tools { jdk 'jdk17' }   // Use the JDK tool you defined in Jenkins (matches your logs)
-
   options {
     timestamps()
-    buildDiscarder(logRotator(numToKeepStr: '20'))
+    skipDefaultCheckout(true)
+    buildDiscarder(logRotator(numToKeepStr: '30'))
   }
-
   environment {
-    // Reusable bits for Windows agent + Maven Wrapper
     MVN = 'mvnw.cmd -B -V --no-transfer-progress -Dmaven.repo.local=.m2\\repo'
-    APP_NAME = 'spring-petclinic'
-    GIT_SHA  = "${env.GIT_COMMIT?.take(7) ?: 'local'}"
-    VERSION  = "${env.BUILD_NUMBER}-${GIT_SHA}"
+    MAVEN_OPTS = '-Xms256m -Xmx1024m'
   }
-
   stages {
-
-    stage('Checkout') {
+    stage('Declarative: Checkout SCM') {
       steps {
         checkout scm
+        echo "GIT_COMMIT=${env.GIT_COMMIT}"
+        echo "BRANCH_NAME=${env.BRANCH_NAME}"
       }
     }
 
     stage('Build') {
       steps {
-        // Prove correct Java toolchain in logs
-        bat '"%JAVA_HOME%\\bin\\java" -version'
-
-        // Keep formatting consistent (you used this in earlier runs)
-        bat "${MVN} spring-javaformat:apply"
-
-        // Fast packaging; tests run in dedicated stages below
-        bat "${MVN} -DskipTests -Dcheckstyle.skip=true clean package"
+        bat "${env.MVN} spring-javaformat:apply"
+        bat "${env.MVN} -DskipTests -Dcheckstyle.skip=true clean package"
       }
       post {
         success {
-          // Archive the built JAR and fingerprint it (traceability)
-          archiveArtifacts artifacts: 'target\\*.jar', fingerprint: true
+          archiveArtifacts artifacts: 'target/**/*.jar,target/classes/META-INF/sbom/*.json', fingerprint: true
         }
       }
     }
 
     stage('Test: Unit') {
       steps {
-        // Run only unit tests (Surefire). Skip ITs explicitly.
-        bat "${MVN} -Dcheckstyle.skip=true -DskipITs=true test"
+        bat "${env.MVN} -Dcheckstyle.skip=true -DskipITs=true test"
       }
       post {
-        // Parse Surefire XML reports (unit tests)
         always {
           junit testResults: 'target/surefire-reports/*.xml',
-                keepLongStdio: true,
-                allowEmptyResults: false
+                allowEmptyResults: false,
+                skipPublishingChecks: true
         }
       }
     }
 
     stage('Test: Integration') {
       steps {
-        // Run only integration tests (Failsafe). Skip unit tests explicitly.
-        bat "${MVN} -Dcheckstyle.skip=true -DskipITs=false failsafe:integration-test failsafe:verify"
+        bat "${env.MVN} -Dcheckstyle.skip=true -DskipTests=true -DskipITs=false failsafe:integration-test failsafe:verify"
       }
       post {
-        // Parse Failsafe XML reports (integration tests)
         always {
           junit testResults: 'target/failsafe-reports/*.xml',
-                keepLongStdio: true,
-                allowEmptyResults: false
+                allowEmptyResults: false,
+                skipPublishingChecks: true
         }
       }
     }
 
     stage('Coverage Report') {
       steps {
-        // Generate JaCoCo HTML report from jacoco.exec produced during tests
-        bat "${MVN} -Dcheckstyle.skip=true jacoco:report"
+        bat "${env.MVN} -Dcheckstyle.skip=true jacoco:report"
+      }
+      post {
+        success {
+          publishHTML(target: [
+            reportDir: 'target/site/jacoco',
+            reportFiles: 'index.html',
+            reportName: 'JaCoCo Coverage',
+            keepAll: true,
+            allowMissing: false,
+            alwaysLinkToLastBuild: true
+          ])
+        }
+      }
+    }
 
-        // Publish JaCoCo HTML to the build page
-        publishHTML(target: [
-          reportDir: 'target/site/jacoco',
-          reportFiles: 'index.html',
-          reportName: 'JaCoCo Coverage',
-          keepAll: true,
-          allowMissing: false,
-          alwaysLinkToLastBuild: false
-        ])
+    stage('Code Quality (SonarQube)') {
+      when {
+        expression { fileExists('sonar-project.properties') }
+      }
+      steps {
+        withSonarQubeEnv('SonarLocal-8094') {
+          bat "${env.MVN} -DskipTests -Dcheckstyle.skip=true sonar:sonar"
+        }
       }
     }
 
     stage('Tag Build') {
-      when { branch 'main' }  // Only tag on main
-      environment {
-        // You should have a secret text credential named GIT_TOKEN in Jenkins
-        GIT_HTTPS = "https://tthanh05:${GIT_TOKEN}@github.com/tthanh05/devops-petclinic.git"
+      when {
+        allOf { branch 'main'; expression { currentBuild.currentResult == 'SUCCESS' } }
       }
       steps {
-        withCredentials([string(credentialsId: 'github_push_token', variable: 'GIT_TOKEN')]) {
-          bat '''
+        withCredentials([usernamePassword(credentialsId: 'github_push', usernameVariable: 'GIT_USER', passwordVariable: 'GIT_TOKEN')]) {
+          bat """
             git config user.email "ci@jenkins"
             git config user.name  "Jenkins CI"
-            git remote set-url origin %GIT_HTTPS%
-            git tag -a v%BUILD_NUMBER%-%GIT_SHA% -m "CI build %BUILD_NUMBER% (%GIT_SHA%)"
+            git remote set-url origin https://%GIT_USER%:%GIT_TOKEN%@github.com/tthanh05/devops-petclinic.git
+            git tag -a v${env.BUILD_NUMBER}-${env.GIT_COMMIT.substring(0,7)} -m "CI build ${env.BUILD_NUMBER} (${env.GIT_COMMIT.substring(0,7)})"
             git push origin --tags
-          '''
+          """
         }
       }
     }
   }
-
   post {
-    success {
-      echo "Build ${VERSION} archived, tests passed, coverage published, and tag pushed (if main)."
-    }
-    failure {
-      echo "Build ${VERSION} failed. Check unit/IT report parsing (folders: surefire-reports / failsafe-reports)."
-    }
+    success { echo "Build ${env.BUILD_NUMBER}-${env.GIT_COMMIT.substring(0,7)} archived, tests passed, coverage published, Sonar (if configured) executed, and tag pushed (if main)." }
+    failure { echo "Build ${env.BUILD_NUMBER}-${env.GIT_COMMIT.substring(0,7)} failed. Check surefire/failsafe report paths and credentials." }
   }
 }
