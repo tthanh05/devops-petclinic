@@ -69,6 +69,7 @@ pipeline {
               ${MVN} -DskipTests=true ^
                      -Dsonar.login=%SONAR_TOKEN% ^
                      -Dsonar.working.directory=.scannerwork ^
+                     -Dsonar.projectVersion=%BUILD_NUMBER% ^
                      sonar:sonar
             """
     
