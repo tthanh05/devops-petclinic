@@ -60,10 +60,6 @@ pipeline {
     }
 
     stage('Code Quality: SonarQube') {
-      environment {
-        // If you defined a global token in Jenkins Sonar Server config, you might not need SONAR_TOKEN here.
-        // If you use a per-project token, bind it like below:
-      }
       steps {
         withSonarQubeEnv('sonarqube-lts') { // <-- must match the name in Jenkins > Manage Jenkins > SonarQube servers
           withCredentials([string(credentialsId: 'sonar_token', variable: 'SONAR_TOKEN')]) {
