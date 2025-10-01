@@ -265,7 +265,7 @@ pipeline {
       }
     }
     }
-
+  }
   post {
     success {
       echo "Build ${VERSION} passed all gates and deployed to staging on 8085."
