@@ -18,10 +18,10 @@ pipeline {
     stage('Build') {
       steps {
         bat '"%JAVA_HOME%\\bin\\java" -version'
-        // Auto-format code so 'validate' passes
+        // Auto-format code so 'validate' won’t fail on style
         bat 'mvnw.cmd -B -V -Dmaven.repo.local=%MAVEN_REPO% --no-transfer-progress spring-javaformat:apply'
-        // Now build
-        bat 'mvnw.cmd -B -V -DskipTests -Dmaven.repo.local=%MAVEN_REPO% --no-transfer-progress clean package'
+        // Build (skip checkstyle here; we enforce style in Code Quality later)
+        bat 'mvnw.cmd -B -V -DskipTests -Dcheckstyle.skip=true -Dmaven.repo.local=%MAVEN_REPO% --no-transfer-progress clean package'
       }
       post {
         success {
@@ -30,15 +30,14 @@ pipeline {
       }
     }
 
-
     // ---------- Test: Unit (Surefire runs **/*Test.java) ----------
     stage('Test: Unit') {
       steps {
-        bat 'mvnw.cmd -B -Dmaven.repo.local=%MAVEN_REPO% -DskipITs=true --no-transfer-progress test'
+        bat 'mvnw.cmd -B -Dcheckstyle.skip=true -Dmaven.repo.local=%MAVEN_REPO% -DskipITs=true --no-transfer-progress test'
       }
       post {
         always {
-          junit 'target\\surefire-reports\\*.xml'   // fail the build if tests failed
+          junit 'target\\surefire-reports\\*.xml'   // fails the build if unit tests failed
         }
       }
     }
@@ -47,11 +46,11 @@ pipeline {
     stage('Test: Integration') {
       steps {
         // Boots a real Spring context (your *IT.java tests use @SpringBootTest).
-        bat 'mvnw.cmd -B -Dmaven.repo.local=%MAVEN_REPO% -DskipTests=true -DskipITs=false --no-transfer-progress failsafe:integration-test failsafe:verify'
+        bat 'mvnw.cmd -B -Dcheckstyle.skip=true -Dmaven.repo.local=%MAVEN_REPO% -DskipTests=true -DskipITs=false --no-transfer-progress failsafe:integration-test failsafe:verify'
       }
       post {
         always {
-          junit 'target\\failsafe-reports\\*.xml'   // fail the build if any IT failed
+          junit 'target\\failsafe-reports\\*.xml'   // fails the build if any IT failed
         }
       }
     }
@@ -60,7 +59,7 @@ pipeline {
     stage('Coverage Report') {
       steps {
         // JaCoCo report also runs during 'verify', but this ensures HTML is present.
-        bat 'mvnw.cmd -B -Dmaven.repo.local=%MAVEN_REPO% --no-transfer-progress jacoco:report'
+        bat 'mvnw.cmd -B -Dcheckstyle.skip=true -Dmaven.repo.local=%MAVEN_REPO% --no-transfer-progress jacoco:report'
       }
       post {
         always {
