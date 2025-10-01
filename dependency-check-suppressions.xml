@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+
+  <!-- Example: suppress a false positive where CVE maps to a different product -->
+  <suppress until="2026-01-01">
+    <notes>False positive: library X does not include the affected module. Will revisit after upstream advisory.</notes>
+    <cve>CVE-2022-12345</cve>
+    <gav regex="true">^org\.example:example-lib:.*$</gav>
+  </suppress>
+
+  <!-- Example: suppress a bundled webjar where we don't execute the vulnerable code path -->
+  <suppress until="2025-12-31">
+    <notes>WebJAR asset not served in our app; not reachable. Tracking upstream fix.</notes>
+    <cve>CVE-2021-23456</cve>
+    <packageUrl regex="true">^pkg:maven/org\.webjars/.*$</packageUrl>
+  </suppress>
+
+</suppressions>
