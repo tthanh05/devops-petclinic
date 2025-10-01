@@ -74,11 +74,11 @@ pipeline {
           ${MVN} -DskipTests=true ^
                  org.owasp:dependency-check-maven:check ^
                  -DdataDirectory=%DC_CACHE% ^
-                 -Dformat=HTML,XML,JSON,JUNIT ^
+                 -Dformat=ALL ^
                  -DfailBuildOnCVSS=7 ^
                  -Danalyzers.assembly.enabled=false ^
                  -DautoUpdate=true ^
-                 -DsuppressionFile=dependency-check-suppression.xml
+                 -DsuppressionFile=dependency-check-suppressions.xml
         """
       }
       post {
@@ -100,7 +100,8 @@ pipeline {
             allowMissing: false,
             alwaysLinkToLastBuild: false
           ])
-
+          // Archive everything for evidence
+          archiveArtifacts artifacts: 'target/dependency-check-report/**, target/dependency-check-json*', allowEmptyArchive: true
           // Also surface as a test-like report so it’s visible in Jenkins UI
           junit testResults: 'target/dependency-check-junit.xml', allowEmptyResults: true
         }
