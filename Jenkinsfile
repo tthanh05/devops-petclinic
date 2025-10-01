@@ -13,6 +13,8 @@ pipeline {
     APP_NAME = 'spring-petclinic'
     GIT_SHA  = "${env.GIT_COMMIT?.take(7) ?: 'local'}"
     VERSION  = "${env.BUILD_NUMBER}-${GIT_SHA}"
+    // Cache for OWASP Dependency-Check (faster repeated runs)
+    DC_CACHE = '.dc'
   }
 
   stages {
@@ -48,6 +50,7 @@ pipeline {
 
     stage('Test: Integration') {
       steps {
+        // append=true lets JaCoCo merge IT coverage with unit coverage later
         bat "${MVN} -Dcheckstyle.skip=true -DskipITs=false -Djacoco.append=true failsafe:integration-test failsafe:verify"
       }
       post {
@@ -59,15 +62,66 @@ pipeline {
       }
     }
 
+    /* -------------------- SECURITY (SCA) --------------------
+     * OWASP Dependency-Check scans all dependencies for known CVEs.
+     * - Fails the build on CVSS >= 7 (you can tune this).
+     * - Uses a suppression file for documented false positives.
+     * - Publishes HTML + JUnit reports and archives raw outputs.
+     * ------------------------------------------------------ */
+    stage('Security: Dependency Scan (OWASP)') {
+      steps {
+        bat """
+          ${MVN} -DskipTests=true ^
+                 org.owasp:dependency-check-maven:check ^
+                 -DdataDirectory=%DC_CACHE% ^
+                 -Dformat=HTML,XML,JSON,JUNIT ^
+                 -DfailBuildOnCVSS=7 ^
+                 -Danalyzers.assembly.enabled=false ^
+                 -DautoUpdate=true ^
+                 -DsuppressionFile=dependency-check-suppression.xml
+        """
+      }
+      post {
+        always {
+          // Keep everything for audit
+          archiveArtifacts artifacts: '''
+            target/dependency-check-report.html,
+            target/dependency-check-report.xml,
+            target/dependency-check-report.json,
+            target/dependency-check-junit.xml
+          '''.trim().replaceAll("\\s+", " "), fingerprint: true, allowEmptyArchive: true
+
+          // Nice HTML report on the build page
+          publishHTML(target: [
+            reportDir: 'target',
+            reportFiles: 'dependency-check-report.html',
+            reportName: 'OWASP Dependency-Check',
+            keepAll: true,
+            allowMissing: false,
+            alwaysLinkToLastBuild: false
+          ])
+
+          // Also surface as a test-like report so it’s visible in Jenkins UI
+          junit testResults: 'target/dependency-check-junit.xml', allowEmptyResults: true
+        }
+        failure {
+          echo '❌ High severity CVEs detected (CVSS >= 7). See "OWASP Dependency-Check" report and mitigation notes.'
+        }
+        unsuccessful {
+          echo '⚠️ Review Dependency-Check results. Use the suppression file ONLY for genuine false-positives with justification.'
+        }
+      }
+    }
+
+    /* -------------------- CODE QUALITY (SonarQube) -------------------- */
     stage('Code Quality: SonarQube') {
       steps {
-        // make sure the XML exists
+        // Make sure the XML exists for coverage
         bat "${MVN} -Dcheckstyle.skip=true jacoco:report"
-        
+
         withSonarQubeEnv('sonarqube-server') {
           withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
-    
-            // Run scanner and pin the working dir to the workspace root
+
             bat """
               ${MVN} -DskipTests=true ^
                      -Dsonar.login=%SONAR_TOKEN% ^
@@ -75,34 +129,26 @@ pipeline {
                      -Dsonar.projectVersion=%BUILD_NUMBER% ^
                      sonar:sonar
             """
-    
-            // Diagnostics: show cwd, list hidden .scannerwork, and print the task file
+
+            // Diagnostics to tie CE task to this build
             bat 'cd'
             bat 'dir /a .scannerwork'
             bat 'type .scannerwork\\report-task.txt'
-    
-            // OPTIONAL: if multi-module, find any .scannerwork folders recursively
-            // (Double % is required inside Jenkins bat files)
             bat 'for /d /r %%i in (.scannerwork) do @echo FOUND: %%i'
           }
         }
-        // Keep the scanner artifacts with the build for evidence
         archiveArtifacts artifacts: '.scannerwork/**', fingerprint: false, allowEmptyArchive: true
       }
     }
 
-
-
     stage('Quality Gate') {
       steps {
         timeout(time: 10, unit: 'MINUTES') {
-          // Requires Jenkins SonarQube Scanner plugin + Webhook from SonarQube -> 	http://host.docker.internal:8092/sonarqube-webhook/
+          // Webhook should be set to http://host.docker.internal:8092/sonarqube-webhook/ (your Jenkins port)
           waitForQualityGate abortPipeline: true
         }
       }
     }
-
-
 
     stage('Coverage Report') {
       steps {
@@ -136,7 +182,7 @@ pipeline {
 
   post {
     success {
-      echo "Build ${VERSION} archived, tests passed, coverage published, and tag pushed (if main)."
+      echo "Build ${VERSION} archived, tests passed, coverage published, security scan clean (or justified), and tag pushed (if main)."
     }
     failure {
       echo "Build ${VERSION} failed. If failure happened in Tag Build, check credential type/binding."
