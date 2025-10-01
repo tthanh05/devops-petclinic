@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   db:
     image: mysql:8.0
@@ -10,12 +8,12 @@ services:
       MYSQL_ROOT_PASSWORD: root
       MYSQL_USER: pet
       MYSQL_PASSWORD: pet
-    ports:
-      - "3306:3306"
+    # No host port publish to avoid 3306 conflicts
     volumes:
       - petclinic_mysql_data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${MYSQL_ROOT_PASSWORD}"]
+      # Use CMD-SHELL so env expands inside the container; $$ escapes for compose
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -p$$MYSQL_ROOT_PASSWORD"]
       interval: 5s
       timeout: 3s
       retries: 30
@@ -35,9 +33,6 @@ services:
       SERVER_PORT: "8085"
     ports:
       - "8085:8085"
-    # NOTE: we rely on Jenkins' external health gate at :8085,
-    # so we don't declare an app-level healthcheck here
-    # (the base image doesn't ship curl/wget by default).
 
 volumes:
   petclinic_mysql_data:
