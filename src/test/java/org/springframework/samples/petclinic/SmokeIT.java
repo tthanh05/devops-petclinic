@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
+import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.ResponseEntity;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -11,20 +12,23 @@ import static org.assertj.core.api.Assertions.assertThat;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class SmokeIT {
 
+  @LocalServerPort
+  int port;
+
   @Autowired
-  private TestRestTemplate http;
+  private TestRestTemplate rest;
 
   @Test
-  void healthEndpointIsUp() {
-    ResponseEntity<String> res = http.getForEntity("/actuator/health", String.class);
-    assertThat(res.getStatusCode().is2xxSuccessful()).isTrue();
-    assertThat(res.getBody()).contains("UP");
+  void healthIsUp() {
+    ResponseEntity<String> r = rest.getForEntity("/actuator/health", String.class);
+    assertThat(r.getStatusCode().is2xxSuccessful()).isTrue();
+    assertThat(r.getBody()).contains("UP");
   }
 
   @Test
   void homePageLoads() {
-    ResponseEntity<String> res = http.getForEntity("/", String.class);
-    assertThat(res.getStatusCode().is2xxSuccessful()).isTrue();
-    assertThat(res.getBody()).contains("Welcome"); // simple content check
+    ResponseEntity<String> r = rest.getForEntity("/", String.class);
+    assertThat(r.getStatusCode().is2xxSuccessful()).isTrue();
+    assertThat(r.getBody()).containsIgnoringCase("petclinic");
   }
 }
