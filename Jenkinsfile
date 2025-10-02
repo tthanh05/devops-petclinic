@@ -255,7 +255,6 @@ pipeline {
         }
       }
     }
-  }
 
       /* ===================== RELEASE: Production via Octopus ===================== */
     stage('Release: Production (Octopus - tagged, versioned, env-specific)') {
@@ -362,7 +361,7 @@ pipeline {
         }
       }
     }
-
+  }
 
   post {
     success {
