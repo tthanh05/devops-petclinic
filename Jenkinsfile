@@ -205,7 +205,7 @@ pipeline {
     }
 
     /* ==================== RELEASE (Production via Octopus Deploy) ==================== */
-    stage('Release: Production (Octopus — tagged, versioned, env-specific)') {
+    stage('Release: Production (Octopus - tagged, versioned, env-specific)') {
       when { branch 'main' } // only release from main
       steps {
         // --- Ensure Octopus CLI is available in workspace (portable download if missing)
