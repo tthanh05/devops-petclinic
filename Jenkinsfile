@@ -133,7 +133,17 @@ pipeline {
           docker build -t %APP_NAME%:%VERSION% -f Dockerfile .
           docker image tag %APP_NAME%:%VERSION% %APP_NAME%:%STAGING_IMAGE_TAG%
         """
-
+        // Hard cleanup for any stray old containers created outside this project (one-time guard)
+        powershell('''
+          $names = @("petclinic-db","petclinic_app","petclinic-db","petclinic-app")
+          foreach ($n in $names) {
+            $id = docker ps -a -q -f "name=^/$n$"
+            if ($id) {
+              Write-Host "Removing stray container $n ($id) to avoid name conflict..."
+              docker rm -f $id | Out-Null
+            }
+          }
+        ''')
         bat """
           docker compose -f %DOCKER_COMPOSE_FILE% down --remove-orphans
           docker compose -f %DOCKER_COMPOSE_FILE% up -d --remove-orphans
