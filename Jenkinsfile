@@ -149,7 +149,7 @@ pipeline {
           docker compose -f %DOCKER_COMPOSE_FILE% up -d --remove-orphans
         """
 
-                powershell('''
+        powershell('''
           $ErrorActionPreference = "Stop"
 
           # --- Inputs (fallbacks if env missing) ---
