@@ -153,17 +153,22 @@ pipeline {
           $ErrorActionPreference = "Stop"
         
           # --- Inputs with PS5-safe fallbacks ---
-          $app   = if ($env:APP_NAME            -and $env:APP_NAME.Trim())            { $env:APP_NAME }            else { "spring-petclinic" }
-          $stag  = if ($env:STAGING_IMAGE_TAG   -and $env:STAGING_IMAGE_TAG.Trim())   { $env:STAGING_IMAGE_TAG }   else { "staging" }
-          $prev  = if ($env:PREV_IMAGE_TAG      -and $env:PREV_IMAGE_TAG.Trim())      { $env:PREV_IMAGE_TAG }      else { "staging-prev" }
-          $compose = if ($env:DOCKER_COMPOSE_FILE -and $env:DOCKER_COMPOSE_FILE.Trim()){ $env:DOCKER_COMPOSE_FILE } else { "docker-compose.staging.yml" }
+          $app     = if ($env:APP_NAME) { $env:APP_NAME } else { "spring-petclinic" }
+          $stag    = if ($env:STAGING_IMAGE_TAG) { $env:STAGING_IMAGE_TAG } else { "staging" }
+          $prev    = if ($env:PREV_IMAGE_TAG) { $env:PREV_IMAGE_TAG } else { "staging-prev" }
+          $compose = if ($env:DOCKER_COMPOSE_FILE) { $env:DOCKER_COMPOSE_FILE } else { "docker-compose.staging.yml" }
+          $url     = $env:HEALTH_URL
         
-          # PS5-safe numeric defaults
-          if ($env:HEALTH_MAX_WAIT_SEC -and $env:HEALTH_MAX_WAIT_SEC -match '^\d+$') { $max = [int]$env:HEALTH_MAX_WAIT_SEC } else { $max = 180 }
-          if ($env:HEALTH_INTERVAL_SEC -and $env:HEALTH_INTERVAL_SEC -match '^\d+$') { $int = [int]$env:HEALTH_INTERVAL_SEC } else { $int = 5 }
-          $url = $env:HEALTH_URL
+          # PS5-safe numeric defaults (no regex, no null-coalescing)
+          $max = $null
+          [void][int]::TryParse($env:HEALTH_MAX_WAIT_SEC, [ref]$max)
+          if ($max -eq $null -or $max -le 0) { $max = 180 }
+        
+          $int = $null
+          [void][int]::TryParse($env:HEALTH_INTERVAL_SEC, [ref]$int)
+          if ($int -eq $null -or $int -le 0) { $int = 5 }
+        
           $ok = $false
-        
           Write-Host "Waiting up to $max sec for health at $url ..."
           for ($t=0; $t -lt $max; $t += $int) {
             try {
@@ -205,7 +210,6 @@ pipeline {
             throw "Deploy failed health gate; rollback attempted if previous image existed."
           }
         ''')
-
 
       }
       post {
