@@ -1,7 +1,7 @@
 services:
   db:
     image: mysql:8.0
-    container_name: petclinic-db
+    #container_name: petclinic-db
     environment:
       MYSQL_ROOT_PASSWORD: "petclinic"
       MYSQL_DATABASE: "petclinic"
@@ -16,7 +16,7 @@ services:
 
   app:
     image: "spring-petclinic:#{ImageTag}"     # Octopus substitutes this
-    container_name: petclinic-app
+    #container_name: petclinic-app
     depends_on:
       db:
         condition: service_healthy
