@@ -208,65 +208,32 @@ pipeline {
     stage('Release: Production (Octopus - tagged, versioned, env-specific)') {
       when { branch 'main' } // only release from main
       steps {
-        // --- Ensure Octopus CLI is available in workspace (portable download if missing)
-        powershell('''
-          $ErrorActionPreference = "Stop"
-          $cliDir = Join-Path $PWD "octo-cli"
-          $octoExe = Join-Path $cliDir "octo.exe"
-          if (-not (Test-Path $octoExe)) {
-            New-Item -ItemType Directory -Force -Path $cliDir | Out-Null
-            $zip = Join-Path $cliDir "octo.zip"
-            $url = "https://github.com/OctopusDeploy/OctopusCLI/releases/latest/download/OctopusTools.win-x64.zip"
-            try {
-              Invoke-WebRequest -Uri $url -OutFile $zip -Headers @{ "User-Agent" = "curl/8.0 jenkins" } -UseBasicParsing
-              Add-Type -AssemblyName System.IO.Compression.FileSystem
-              [IO.Compression.ZipFile]::ExtractToDirectory($zip, $cliDir, $true)
-            } catch {
-              Write-Warning "GitHub download failed ($($_.Exception.Message)). Trying Chocolatey…"
-              if (Get-Command choco -ErrorAction SilentlyContinue) {
-                choco install octopusdeploy.octo -y --no-progress
-                $octoExe = "C:\\ProgramData\\chocolatey\\bin\\octo.exe"
-              } else {
-                throw "Could not obtain Octopus CLI (GitHub & Chocolatey both unavailable)."
-              }
-            }
-          }
-          "$octoExe" | Out-File -FilePath "octo-path.txt" -Encoding ascii
-        ''')
-
-        // make $OCTO point to the exe we just fetched
-        script {
-          env.OCTO = readFile('octo-path.txt').trim()
-        }
-        bat "\"%OCTO%\" version"
-
-        // --- Pack & Push release assets to Octopus (compose + script)
         withCredentials([
           string(credentialsId: 'octopus_server', variable: 'OCTO_SERVER'),
           string(credentialsId: 'octopus_api',    variable: 'OCTO_API_KEY')
         ]) {
-          // Use Octopus CLI via Docker (no exe download needed)
+          // Use Octopus CLI via Docker (no exe download on agent)
           bat """
             docker pull octopusdeploy/octo:latest
-          
+
             :: Show CLI version
             docker run --rm -v %CD%:/work -w /work octopusdeploy/octo:latest version
-          
-            :: Pack the prod deployment assets from the repo into petclinic-prod.%VERSION%.zip
+
+            :: Pack the prod deployment assets into petclinic-prod.%VERSION%.zip
             docker run --rm -v %CD%:/work -w /work octopusdeploy/octo:latest ^
               pack --id=\"petclinic-prod\" --version=%VERSION% --format=Zip ^
               --basePath=. --include=\"docker-compose.prod.yml\" --include=\"octopus\\\\Deploy.ps1\"
-          
+
             :: Push the package to Octopus built-in feed
             docker run --rm -v %CD%:/work -w /work octopusdeploy/octo:latest ^
               push --server=%OCTO_SERVER% --apiKey=%OCTO_API_KEY% ^
               --package=\"petclinic-prod.%VERSION%.zip\"
-          
+
             :: Create (or reuse) the Octopus Release for project Petclinic
             docker run --rm -v %CD%:/work -w /work octopusdeploy/octo:latest ^
               create-release --server=%OCTO_SERVER% --apiKey=%OCTO_API_KEY% ^
               --project=\"Petclinic\" --version=%VERSION% --packageVersion=%VERSION% --ignoreExisting
-          
+
             :: Deploy that release to Production with env-specific variables
             docker run --rm -v %CD%:/work -w /work octopusdeploy/octo:latest ^
               deploy-release --server=%OCTO_SERVER% --apiKey=%OCTO_API_KEY% ^
@@ -276,7 +243,7 @@ pipeline {
           """
         }
 
-        // --- Post-release health gate (Jenkins validates prod URL)
+        // Post-release health gate (Jenkins validates prod URL)
         powershell('''
           $max = [int]$env:PROD_HEALTH_MAX_WAIT_SEC; $interval = [int]$env:PROD_HEALTH_INTERVAL_SEC; $ok = $false
           Write-Host "Waiting up to $max sec for PROD health at $($env:PROD_HEALTH_URL) ..."
@@ -291,7 +258,7 @@ pipeline {
           "PROD Health OK" | Tee-Object -FilePath health-check-prod.log -Append
         ''')
 
-        // --- Annotated Git tag for the production release
+        // Annotated Git tag for the production release
         withCredentials([usernamePassword(credentialsId: 'github_push', usernameVariable: 'GIT_USER', passwordVariable: 'GIT_PASS')]) {
           bat '''
             git config user.email "ci@jenkins"
@@ -308,9 +275,6 @@ pipeline {
           archiveArtifacts artifacts: "${DOCKER_COMPOSE_FILE_PROD}, health-check-prod.log", fingerprint: true, allowEmptyArchive: true
         }
         failure { echo "Production release failed (Octopus or health gate). Check logs/artifacts." }
-        always {
-          archiveArtifacts artifacts: 'octo-path.txt', allowEmptyArchive: true
-        }
       }
     }
   }
