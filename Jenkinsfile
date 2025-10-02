@@ -227,17 +227,49 @@ pipeline {
             Compress-Archive -Path $paths -DestinationPath $pkg -Force
             Write-Host "Packaged: $pkg"
           ''')
-    
-          // 2) Push package to Octopus Built-in feed via REST (no CLI, no mounts)
+  
+          // 2) Push package to Octopus Built-in feed via REST (MULTIPART) + fallback
           powershell('''
             $ErrorActionPreference = "Stop"
             $pkg = "petclinic-prod.$env:VERSION.zip"
+            if (-not (Test-Path $pkg)) { throw "Package not found: $pkg" }
+          
+            # Build endpoint (works for Cloud/Server; API key carries the Space)
             $uri = ($env:OCTO_SERVER.TrimEnd('/')) + "/api/packages/raw?replace=true"
             $headers = @{ "X-Octopus-ApiKey" = $env:OCTO_API_KEY }
-            Write-Host "Uploading $pkg to $uri ..."
-            Invoke-WebRequest -Method Post -Uri $uri -Headers $headers `
-              -InFile $pkg -ContentType "application/octet-stream" | Out-Null
-            Write-Host "Upload OK."
+          
+            Write-Host "Uploading $pkg to $uri as multipart/form-data ..."
+            try {
+              # PowerShell-native multipart
+              $file = Get-Item -LiteralPath $pkg
+              $form = @{ file = $file }
+              Invoke-RestMethod -Method Post -Uri $uri -Headers $headers -Form $form | Out-Null
+              Write-Host "Upload OK (multipart via Invoke-RestMethod)."
+            }
+            catch {
+              Write-Warning "Multipart upload failed: $($_.Exception.Message). Trying HttpClient fallback..."
+          
+              Add-Type -AssemblyName System.Net.Http
+              $client = [System.Net.Http.HttpClient]::new()
+              $client.DefaultRequestHeaders.Add("X-Octopus-ApiKey", $env:OCTO_API_KEY)
+          
+              $content = [System.Net.Http.MultipartFormDataContent]::new()
+              $fs = [System.IO.File]::OpenRead((Resolve-Path $pkg))
+              $stream = [System.Net.Http.StreamContent]::new($fs)
+              $stream.Headers.ContentDisposition = [System.Net.Http.Headers.ContentDispositionHeaderValue]::new("form-data")
+              $stream.Headers.ContentDisposition.Name = '"file"'
+              $stream.Headers.ContentDisposition.FileName = '"' + [System.IO.Path]::GetFileName($pkg) + '"'
+              $content.Add($stream)
+          
+              $resp = $client.PostAsync($uri, $content).Result
+              if (-not $resp.IsSuccessStatusCode) {
+                $body = $resp.Content.ReadAsStringAsync().Result
+                throw "Upload failed: $($resp.StatusCode) $body"
+              }
+          
+              $fs.Dispose(); $client.Dispose()
+              Write-Host "Upload OK (HttpClient fallback)."
+            }
           ''')
     
           // 3) Create (or reuse) the release for project Petclinic using Octopus CLI in Docker (no -v)
