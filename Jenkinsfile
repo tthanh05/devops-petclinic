@@ -212,34 +212,39 @@ pipeline {
           string(credentialsId: 'octopus_server', variable: 'OCTO_SERVER'),
           string(credentialsId: 'octopus_api',    variable: 'OCTO_API_KEY')
         ]) {
-          // Use Octopus CLI via Docker (no exe download on agent)
+          // --- Compute a Docker/WSL2-friendly mount path like //c/ProgramData/Jenkins/...
+          bat """
+            for /f "delims=" %%P in ('powershell -NoProfile -Command ^
+              "$p=(Get-Location).Path; " ^
+              "$p=$p -replace '\\\\','/'; " ^
+              "$p=$p -replace '^([A-Za-z]):','//$([char]([byte][char]$matches[1].ToLowerInvariant()))'; " ^
+              "Write-Output $p" ') do set "WSLPATH=%%P"
+            echo Using mount src: %WSLPATH%
+          """
+        
+          // --- Use %WSLPATH% in all docker run commands
           bat """
             docker pull octopusdeploy/octo:latest
-
-            :: Show CLI version
-            docker run --rm -v %CD%:/work -w /work octopusdeploy/octo:latest version
-
-            :: Pack the prod deployment assets into petclinic-prod.%VERSION%.zip
-            docker run --rm -v %CD%:/work -w /work octopusdeploy/octo:latest ^
-              pack --id=\"petclinic-prod\" --version=%VERSION% --format=Zip ^
-              --basePath=. --include=\"docker-compose.prod.yml\" --include=\"octopus\\\\Deploy.ps1\"
-
-            :: Push the package to Octopus built-in feed
-            docker run --rm -v %CD%:/work -w /work octopusdeploy/octo:latest ^
+        
+            docker run --rm -v "%WSLPATH%":/work -w /work octopusdeploy/octo:latest version
+        
+            docker run --rm -v "%WSLPATH%":/work -w /work octopusdeploy/octo:latest ^
+              pack --id="petclinic-prod" --version=%VERSION% --format=Zip ^
+              --basePath=. --include="docker-compose.prod.yml" --include="octopus\\Deploy.ps1"
+        
+            docker run --rm -v "%WSLPATH%":/work -w /work octopusdeploy/octo:latest ^
               push --server=%OCTO_SERVER% --apiKey=%OCTO_API_KEY% ^
-              --package=\"petclinic-prod.%VERSION%.zip\"
-
-            :: Create (or reuse) the Octopus Release for project Petclinic
-            docker run --rm -v %CD%:/work -w /work octopusdeploy/octo:latest ^
+              --package="petclinic-prod.%VERSION%.zip"
+        
+            docker run --rm -v "%WSLPATH%":/work -w /work octopusdeploy/octo:latest ^
               create-release --server=%OCTO_SERVER% --apiKey=%OCTO_API_KEY% ^
-              --project=\"Petclinic\" --version=%VERSION% --packageVersion=%VERSION% --ignoreExisting
-
-            :: Deploy that release to Production with env-specific variables
-            docker run --rm -v %CD%:/work -w /work octopusdeploy/octo:latest ^
+              --project="Petclinic" --version=%VERSION% --packageVersion=%VERSION% --ignoreExisting
+        
+            docker run --rm -v "%WSLPATH%":/work -w /work octopusdeploy/octo:latest ^
               deploy-release --server=%OCTO_SERVER% --apiKey=%OCTO_API_KEY% ^
-              --project=\"Petclinic\" --version=%VERSION% --deployTo=\"Production\" ^
+              --project="Petclinic" --version=%VERSION% --deployTo="Production" ^
               --progress --waitForDeployment --guidedFailure=True ^
-              --variable=\"ImageTag=%VERSION%\" --variable=\"ServerPort=8086\"
+              --variable="ImageTag=%VERSION%" --variable="ServerPort=8086"
           """
         }
 
