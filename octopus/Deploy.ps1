@@ -1,14 +1,14 @@
 # octopus/Deploy.ps1
-# Robust deploy: renders compose with our variables, validates port, and shows what's used.
+# Robust deploy: force image tag and host port regardless of prior substitutions.
 
 $ErrorActionPreference = "Stop"
 
-Write-Host "== Petclinic Production Deploy via Octopus (Deploy.ps1 running) =="
+Write-Host "== Petclinic Production Deploy via Octopus (forced render) =="
 
-# 0) Force a distinct compose project for prod to avoid name collisions with staging
+# Distinct compose project name for PROD
 $env:COMPOSE_PROJECT_NAME = "octopus"
 
-# 1) Read variables coming from Octopus/Jenkins
+# Variables coming from Octopus/Jenkins
 $tag  = $OctopusParameters['ImageTag']
 $port = $OctopusParameters['ServerPort']
 
@@ -16,36 +16,47 @@ Write-Host "Parameters received:"
 Write-Host ("  ImageTag   = '{0}'" -f $tag)
 Write-Host ("  ServerPort = '{0}'" -f $port)
 
-if ([string]::IsNullOrWhiteSpace($tag)) { throw "ImageTag is empty. Jenkins must pass --variable ImageTag=<value>." }
-if ([string]::IsNullOrWhiteSpace($port)) { throw "ServerPort is empty. Jenkins must pass --variable ServerPort=8086 (or set a Project variable scoped to Production)." }
+if ([string]::IsNullOrWhiteSpace($tag))  { throw "ImageTag is empty." }
+if ([string]::IsNullOrWhiteSpace($port)) { throw "ServerPort is empty." }
 
-# 2) Locate the source compose file (from package contents)
+# Locate compose template (whatever Octopus unpacked)
 $composeBase = Join-Path $PSScriptRoot 'docker-compose.prod.yml'
 if (-not (Test-Path $composeBase)) { $composeBase = 'octopus\docker-compose.prod.yml' }
 if (-not (Test-Path $composeBase)) { throw "Cannot find docker-compose.prod.yml in package." }
 
-# 3) Render a temp compose with tokens replaced (independent of Octopus substitution)
+# Read and FORCE the values we want, regardless of earlier substitutions
+$content = Get-Content -Raw -LiteralPath $composeBase
+
+# 1) Force the image tag for spring-petclinic
+#    Matches lines like: image: "spring-petclinic:XYZ"  (with or without quotes)
+$content = [System.Text.RegularExpressions.Regex]::Replace(
+  $content,
+  '(?m)^(?<indent>\s*image:\s*"?spring-petclinic:)[^"\r\n]*("?)(\s*)$',
+  ('${indent}{0}"$3' -f $tag)
+)
+
+# 2) Force any host port that maps to container 8080 to our desired $port
+#    Matches lines like: - "8085:8080" or - "12345:8080"
+$content = [System.Text.RegularExpressions.Regex]::Replace(
+  $content,
+  '(?m)^(?<indent>\s*-\s*")\d{2,5}(:8080")',
+  ('${indent}{0}$2' -f $port)
+)
+
+# Write rendered temp compose
 $composeRendered = Join-Path $env:TEMP ("docker-compose.prod.rendered.{0}.yml" -f ([guid]::NewGuid()))
-(Get-Content -Raw -LiteralPath $composeBase) `
-  -replace '#{ImageTag}',   [System.Text.RegularExpressions.Regex]::Escape($tag) `
-  -replace '#{ServerPort}', [System.Text.RegularExpressions.Regex]::Escape($port) `
-  | Set-Content -LiteralPath $composeRendered -Encoding UTF8
+Set-Content -LiteralPath $composeRendered -Encoding UTF8 -Value $content
 
-# Show the lines we care about (for debugging)
+# Show the exact lines we care about
 Write-Host "Rendered compose key lines:"
-Select-String -LiteralPath $composeRendered -Pattern '^ *image:','^ *ports:' -SimpleMatch | ForEach-Object { "  " + $_.Line } 
+Select-String -LiteralPath $composeRendered -Pattern '^\s*image:\s*"*spring-petclinic:','^\s*-\s*"\d{2,5}:8080"' | ForEach-Object { "  " + $_.Line }
 
-# 4) Guard: if the rendered file still contains '#{ServerPort}', fail
-if (Select-String -LiteralPath $composeRendered -Pattern '#{ServerPort}' -Quiet) {
-  throw "Token substitution failed: '#{ServerPort}' still present in rendered compose."
-}
-
-# 5) If the rendered file ended up with 8085, fail fast (we expect 8086 for prod)
+# Guard: fail if it's still binding 8085 (staging)
 if (Select-String -LiteralPath $composeRendered -Pattern '^\s*-\s*"8085:8080"' -Quiet) {
-  throw "Rendered compose is binding 8085:8080 (staging port). Production must use 8086. Check which variables Octopus passed."
+  throw "Rendered compose is still binding 8085:8080 (staging port). A prior Octopus step rewrote it; this script must run AFTER any substitution, or remove that step."
 }
 
-# 6) Check whether the chosen host port is already in use
+# Check if target host port is already in use
 function Test-PortInUse([int]$p) {
   try {
     $lines = docker ps --format '{{.Ports}}' 2>$null
@@ -55,15 +66,13 @@ function Test-PortInUse([int]$p) {
     return $false
   } catch { return $false }
 }
-if (Test-PortInUse -p [int]$port) {
-  throw "Host port $port is already in use. Staging is 8085; production should be 8086. Free the port or pick another."
-}
+if (Test-PortInUse -p [int]$port) { throw "Host port $port is already in use. Free it or choose another ServerPort." }
 
-# 7) Clean slate for this project, then bring up with rendered compose
+# Clean and deploy using the rendered file
 docker compose -f $composeRendered down --remove-orphans
 docker compose -f $composeRendered up -d
 
-# 8) Health gate
+# Health gate on chosen port
 $healthUrl = "http://localhost:$port/actuator/health"
 $max = 150; $step = 5; $ok = $false
 Write-Host "Waiting up to $max sec for PROD health at $healthUrl ..."
@@ -87,5 +96,5 @@ if (-not $ok) {
   throw "Octopus: PROD health check failed"
 }
 
-# 9) Cleanup temp file (best-effort)
+# Best-effort cleanup
 try { Remove-Item -LiteralPath $composeRendered -Force -ErrorAction SilentlyContinue } catch {}
