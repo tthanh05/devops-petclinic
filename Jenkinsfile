@@ -226,9 +226,9 @@ pipeline {
           $prev = if ($env:PREV_IMAGE_TAG) { $env:PREV_IMAGE_TAG } else { "staging-prev" }
         
           # Health target
-          $url  = $env:HEALTH_URL
-          $host = "localhost"
-          $port = 8085   # keep in sync with compose mapping
+          $url        = $env:HEALTH_URL
+          $targetHost = "localhost"
+          $targetPort = 8085  # keep in sync with compose mapping (host:container = 8085:8080)
         
           # Timeouts
           $max = 300; $interval = 5
@@ -237,16 +237,16 @@ pipeline {
           if ($env:HEALTH_INTERVAL_SEC -and [int]::TryParse($env:HEALTH_INTERVAL_SEC, [ref]$tmp)) { $interval = $tmp }
         
           # 1) Wait briefly for TCP to open
-          Write-Host ("Waiting for TCP {0}:{1} ..." -f $host, $port)
+          Write-Host ("Waiting for TCP {0}:{1} ..." -f $targetHost, $targetPort)
           $tcpOk = $false
           for ($t=0; $t -lt [Math]::Min($max,60); $t += 3) {
             try {
-              $tcp = Test-NetConnection -ComputerName $host -Port $port -WarningAction SilentlyContinue
+              $tcp = Test-NetConnection -ComputerName $targetHost -Port $targetPort -WarningAction SilentlyContinue
               if ($tcp.TcpTestSucceeded) { $tcpOk = $true; break }
             } catch {}
             Start-Sleep -Seconds 3
           }
-          if (-not $tcpOk) { Write-Warning ("Port {0}:{1} not open yet; continuing to HTTP checks..." -f $host, $port) }
+          if (-not $tcpOk) { Write-Warning ("Port {0}:{1} not open yet; continuing to HTTP checks..." -f $targetHost, $targetPort) }
         
           # 2) Poll /actuator/health for 2xx
           $ok = $false
@@ -290,8 +290,6 @@ pipeline {
             throw "Deploy failed health gate; rollback attempted if previous image existed."
           }
         ''')
-
-
       }
 
       post {
