@@ -211,18 +211,34 @@ pipeline {
         // --- Ensure Octopus CLI is available in workspace (portable download if missing)
         powershell('''
           $ErrorActionPreference = "Stop"
-          $octoDir = Join-Path $PWD ".octo"
-          if (-not (Test-Path $octoDir)) { New-Item -ItemType Directory -Path $octoDir | Out-Null }
-          $octoExe = Get-ChildItem $octoDir -Filter "octo.exe" -Recurse | Select-Object -First 1
-          if (-not $octoExe) {
-            $url = "https://download.octopusdeploy.com/octopus-tools/latest/OctopusTools.latest.win-x64.zip"
-            Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile "$octoDir\\octo.zip"
-            Expand-Archive -Path "$octoDir\\octo.zip" -DestinationPath $octoDir -Force
-            $octoExe = Get-ChildItem $octoDir -Filter "octo.exe" -Recurse | Select-Object -First 1
+          $cliDir = Join-Path $PWD "octo-cli"
+          $octoExe = Join-Path $cliDir "octo.exe"
+          if (-not (Test-Path $octoExe)) {
+            New-Item -ItemType Directory -Force -Path $cliDir | Out-Null
+            $zip = Join-Path $cliDir "octo.zip"
+            $url = "https://github.com/OctopusDeploy/OctopusCLI/releases/latest/download/OctopusTools.win-x64.zip"
+            try {
+              Invoke-WebRequest -Uri $url -OutFile $zip -Headers @{ "User-Agent" = "curl/8.0 jenkins" } -UseBasicParsing
+              Add-Type -AssemblyName System.IO.Compression.FileSystem
+              [IO.Compression.ZipFile]::ExtractToDirectory($zip, $cliDir, $true)
+            } catch {
+              Write-Warning "GitHub download failed ($($_.Exception.Message)). Trying Chocolatey…"
+              if (Get-Command choco -ErrorAction SilentlyContinue) {
+                choco install octopusdeploy.octo -y --no-progress
+                $octoExe = "C:\\ProgramData\\chocolatey\\bin\\octo.exe"
+              } else {
+                throw "Could not obtain Octopus CLI (GitHub & Chocolatey both unavailable)."
+              }
+            }
           }
-          Write-Host "Using Octopus CLI at $($octoExe.FullName)"
-          "$($octoExe.FullName)" | Out-File -FilePath octo-path.txt
+          "$octoExe" | Out-File -FilePath "octo-path.txt" -Encoding ascii
         ''')
+
+        // make $OCTO point to the exe we just fetched
+        script {
+          env.OCTO = readFile('octo-path.txt').trim()
+        }
+        bat "\"%OCTO%\" version"
 
         // --- Pack & Push release assets to Octopus (compose + script)
         withCredentials([
