@@ -22,6 +22,7 @@ pipeline {
     HEALTH_URL          = 'http://localhost:8085/actuator/health'
     HEALTH_MAX_WAIT_SEC = '120'
     HEALTH_INTERVAL_SEC = '5'
+    COMPOSE_PROJECT_NAME = 'petclinic-ci'
 
     // ---- Production (Octopus) ----
     DOCKER_COMPOSE_FILE_PROD = 'docker-compose.prod.yml'
