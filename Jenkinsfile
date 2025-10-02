@@ -213,54 +213,78 @@ pipeline {
         // Bring the stack up for our project (always use -p so names are consistent)
         bat "docker compose -p %COMPOSE_PROJECT_NAME% -f %DOCKER_COMPOSE_FILE% up -d --remove-orphans"
       
-        // Health gate (PS5-safe) against host 8085
         powershell('''
           $ErrorActionPreference = "Stop"
+        
+          $compose = if ($env:DOCKER_COMPOSE_FILE) { $env:DOCKER_COMPOSE_FILE } else { "docker-compose.staging.yml" }
+          $project = if ($env:COMPOSE_PROJECT_NAME) { $env:COMPOSE_PROJECT_NAME } else { "petclinic-ci" }
+          $app     = if ($env:APP_NAME) { $env:APP_NAME } else { "spring-petclinic" }
+          $stag    = if ($env:STAGING_IMAGE_TAG) { $env:STAGING_IMAGE_TAG } else { "staging" }
+          $prev    = if ($env:PREV_IMAGE_TAG) { $env:PREV_IMAGE_TAG } else { "staging-prev" }
+        
+          # --- timeouts (bump for first-run DB init; dial back once stable) ---
+          $max = 300; $interval = 5   # total 5 min
+          if ($env:HEALTH_MAX_WAIT_SEC -and [int]::TryParse($env:HEALTH_MAX_WAIT_SEC, [ref]([int]$null))) { $max = [int]$env:HEALTH_MAX_WAIT_SEC }
+          if ($env:HEALTH_INTERVAL_SEC -and [int]::TryParse($env:HEALTH_INTERVAL_SEC, [ref]([int]$null))) { $interval = [int]$env:HEALTH_INTERVAL_SEC }
+        
           $url = $env:HEALTH_URL
-          $max = 0; if ([int]::TryParse($env:HEALTH_MAX_WAIT_SEC, [ref]$max)) {} else { $max = 180 }
-          $int = 0; if ([int]::TryParse($env:HEALTH_INTERVAL_SEC, [ref]$int)) {} else { $int = 5 }
-          $ok = $false
-      
-          Write-Host "Waiting up to $max sec for health at $url ..."
-          Start-Sleep -Seconds 5
-          for ($t=0; $t -lt $max; $t += $int) {
+          $host = "localhost"; $port = 8085  # keep in sync with compose mapping
+        
+          # 1) Wait for TCP port to listen
+          Write-Host "Waiting for TCP $host:$port ..."
+          $tcpOk = $false
+          for ($t=0; $t -lt [Math]::Min($max,60); $t += 3) {
             try {
-              $r = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 5
-              if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 300) {
-                "Health OK (HTTP $($r.StatusCode))" | Tee-Object -FilePath health-check.log -Append
+              $tcp = Test-NetConnection -ComputerName $host -Port $port -WarningAction SilentlyContinue
+              if ($tcp.TcpTestSucceeded) { $tcpOk = $true; break }
+            } catch {}
+            Start-Sleep -Seconds 3
+          }
+          if (-not $tcpOk) { Write-Warning "Port $host:$port not open yet; continuing to HTTP checks anyway." }
+        
+          # 2) Poll /actuator/health for 200
+          $ok = $false
+          Write-Host "Polling $url (up to $max sec) ..."
+          Start-Sleep -Seconds 5
+          for ($t=0; $t -lt $max; $t += $interval) {
+            try {
+              $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 5
+              if ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 300) {
+                "Health OK (HTTP $($resp.StatusCode))" | Tee-Object -FilePath health-check.log -Append
                 $ok = $true; break
               }
-            } catch { Start-Sleep -Seconds $int; continue }
-            Start-Sleep -Seconds $int
+            } catch { Start-Sleep -Seconds $interval; continue }
+            Start-Sleep -Seconds $interval
           }
-      
+        
           if (-not $ok) {
             Write-Warning "Health check FAILED. Capturing diagnostics..."
             try {
-              docker compose -p $env:COMPOSE_PROJECT_NAME -f $env:DOCKER_COMPOSE_FILE ps
-              $appRow = docker compose -p $env:COMPOSE_PROJECT_NAME -f $env:DOCKER_COMPOSE_FILE ps --format json | ConvertFrom-Json | Where-Object { $_.Service -eq 'app' } | Select-Object -First 1
+              docker compose -p $project -f $compose ps
+              $appRow = docker compose -p $project -f $compose ps --format json | ConvertFrom-Json | Where-Object { $_.Service -eq 'app' } | Select-Object -First 1
               if ($appRow) {
                 Write-Host "`n==== docker logs $($appRow.Name) (last 200) ===="
                 docker logs --tail 200 $appRow.Name
                 Write-Host "==== end logs ====`n"
               }
             } catch {}
-      
-            # Safe rollback: only if a previous image exists
-            $prevImage = "$($env:APP_NAME):$($env:PREV_IMAGE_TAG)"
-            $stagImage = "$($env:APP_NAME):$($env:STAGING_IMAGE_TAG)"
+        
+            # Safe rollback only if previous image exists
+            $prevImage = "$app:$prev"
+            $stagImage = "$app:$stag"
             $hasPrev = docker images -q $prevImage
             if ($hasPrev) {
               Write-Host "Rolling back to previous image $prevImage ..."
               docker image tag $prevImage $stagImage
-              docker compose -p $env:COMPOSE_PROJECT_NAME -f $env:DOCKER_COMPOSE_FILE up -d --remove-orphans --force-recreate
+              docker compose -p $project -f $compose up -d --remove-orphans --force-recreate
             } else {
               Write-Warning "No previous image to roll back to ($prevImage not found). Leaving current image in place."
             }
-      
+        
             throw "Deploy failed health gate; rollback attempted if previous image existed."
           }
         ''')
+
       }
 
       post {
