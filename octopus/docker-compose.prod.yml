@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   db:
     image: mysql:8.0
@@ -17,8 +15,7 @@ services:
     restart: unless-stopped
 
   app:
-    # Image tag injected by Octopus (Jenkins passes --variable ImageTag=%VERSION%)
-    image: "spring-petclinic:#{ImageTag}"
+    image: "spring-petclinic:#{ImageTag}"     # Octopus substitutes this
     container_name: petclinic-app
     depends_on:
       db:
@@ -29,7 +26,6 @@ services:
       SPRING_DATASOURCE_USERNAME: "root"
       SPRING_DATASOURCE_PASSWORD: "petclinic"
       SERVER_PORT: "8080"
-    # Host:Container — host port is injected by Octopus (must be quoted)
     ports:
       - "#{ServerPort}:8080"
     restart: unless-stopped
