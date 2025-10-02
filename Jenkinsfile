@@ -130,8 +130,7 @@ pipeline {
             docker image tag %APP_NAME%:%STAGING_IMAGE_TAG% %APP_NAME%:%PREV_IMAGE_TAG%
           )
           docker build -t %APP_NAME%:%VERSION% -f Dockerfile .
-          docker image tag %APP_NAME%:%VERSION% %APP_NAME%:staging
-          // docker image tag %APP_NAME%:%VERSION% %APP_NAME%:%STAGING_IMAGE_TAG%
+          docker image tag %APP_NAME%:%VERSION% %APP_NAME%:%STAGING_IMAGE_TAG%
         """
 
         bat """
