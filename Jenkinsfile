@@ -14,6 +14,8 @@ pipeline {
     GIT_SHA  = "${env.GIT_COMMIT?.take(7) ?: 'local'}"
     VERSION  = "${env.BUILD_NUMBER}-${GIT_SHA}"
     DC_CACHE = '.dc'
+    COMPOSE_PROJECT_NAME = 'petclinic-ci'
+
 
     // --- Deploy/Staging config ---
     DOCKER_COMPOSE_FILE = 'docker-compose.staging.yml'
@@ -180,48 +182,87 @@ pipeline {
       steps {
         bat 'docker --version'
         bat 'docker compose version'
-
+      
+        // Build + tag for staging (and save previous tag, if any)
         bat """
           REM --- Preserve previous staging image for rollback (if it exists)
           for /f "tokens=*" %%i in ('docker images -q %APP_NAME%:%STAGING_IMAGE_TAG%') do (
             docker image tag %APP_NAME%:%STAGING_IMAGE_TAG% %APP_NAME%:%PREV_IMAGE_TAG%
           )
-
+      
           REM --- Build new versioned image and retag to 'staging'
           docker build -t %APP_NAME%:%VERSION% -f Dockerfile .
           docker image tag %APP_NAME%:%VERSION% %APP_NAME%:%STAGING_IMAGE_TAG%
         """
-
-        // Deploy (or update) via compose
-        bat "docker compose -f %DOCKER_COMPOSE_FILE% up -d --remove-orphans"
-
-        // Health gate against host-exposed 8085
+      
+        // Pre-clean anything holding host port 8085 (from previous/bad runs)
         powershell('''
-          $max = [int]$env:HEALTH_MAX_WAIT_SEC
-          $interval = [int]$env:HEALTH_INTERVAL_SEC
+          $ErrorActionPreference = "Stop"
+          $ids = docker ps -q -f "publish=8085"
+          if ($ids) {
+            Write-Host "Stopping/removing containers currently publishing 8085 ..."
+            foreach ($id in $ids) { docker rm -f $id | Out-Null }
+          } else {
+            Write-Host "No containers publishing 8085."
+          }
+        ''')
+      
+        // Bring the stack down for our project (removes any leftovers in this project)
+        bat "docker compose -p %COMPOSE_PROJECT_NAME% -f %DOCKER_COMPOSE_FILE% down --remove-orphans"
+      
+        // Bring the stack up for our project (always use -p so names are consistent)
+        bat "docker compose -p %COMPOSE_PROJECT_NAME% -f %DOCKER_COMPOSE_FILE% up -d --remove-orphans"
+      
+        // Health gate (PS5-safe) against host 8085
+        powershell('''
+          $ErrorActionPreference = "Stop"
+          $url = $env:HEALTH_URL
+          $max = 0; if ([int]::TryParse($env:HEALTH_MAX_WAIT_SEC, [ref]$max)) {} else { $max = 180 }
+          $int = 0; if ([int]::TryParse($env:HEALTH_INTERVAL_SEC, [ref]$int)) {} else { $int = 5 }
           $ok = $false
-          Write-Host "Waiting up to $max sec for health at $($env:HEALTH_URL) ..."
-          for ($t = 0; $t -lt $max; $t += $interval) {
+      
+          Write-Host "Waiting up to $max sec for health at $url ..."
+          Start-Sleep -Seconds 5
+          for ($t=0; $t -lt $max; $t += $int) {
             try {
-              $resp = Invoke-WebRequest -Uri $env:HEALTH_URL -UseBasicParsing -TimeoutSec 5
-              if ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 300) {
-                Write-Host "Health OK (HTTP $($resp.StatusCode))"
+              $r = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 5
+              if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 300) {
+                "Health OK (HTTP $($r.StatusCode))" | Tee-Object -FilePath health-check.log -Append
                 $ok = $true; break
               }
-            } catch {
-              Start-Sleep -Seconds $interval
-              continue
-            }
-            Start-Sleep -Seconds $interval
+            } catch { Start-Sleep -Seconds $int; continue }
+            Start-Sleep -Seconds $int
           }
+      
           if (-not $ok) {
-            Write-Host "Health check FAILED. Rolling back to previous image tag..."
-            docker image tag $env:APP_NAME:$env:PREV_IMAGE_TAG $env:APP_NAME:$env:STAGING_IMAGE_TAG
-            docker compose -f $env:DOCKER_COMPOSE_FILE up -d --remove-orphans
-            throw "Deploy failed health gate; rolled back to previous image."
+            Write-Warning "Health check FAILED. Capturing diagnostics..."
+            try {
+              docker compose -p $env:COMPOSE_PROJECT_NAME -f $env:DOCKER_COMPOSE_FILE ps
+              $appRow = docker compose -p $env:COMPOSE_PROJECT_NAME -f $env:DOCKER_COMPOSE_FILE ps --format json | ConvertFrom-Json | Where-Object { $_.Service -eq 'app' } | Select-Object -First 1
+              if ($appRow) {
+                Write-Host "`n==== docker logs $($appRow.Name) (last 200) ===="
+                docker logs --tail 200 $appRow.Name
+                Write-Host "==== end logs ====`n"
+              }
+            } catch {}
+      
+            # Safe rollback: only if a previous image exists
+            $prevImage = "$($env:APP_NAME):$($env:PREV_IMAGE_TAG)"
+            $stagImage = "$($env:APP_NAME):$($env:STAGING_IMAGE_TAG)"
+            $hasPrev = docker images -q $prevImage
+            if ($hasPrev) {
+              Write-Host "Rolling back to previous image $prevImage ..."
+              docker image tag $prevImage $stagImage
+              docker compose -p $env:COMPOSE_PROJECT_NAME -f $env:DOCKER_COMPOSE_FILE up -d --remove-orphans --force-recreate
+            } else {
+              Write-Warning "No previous image to roll back to ($prevImage not found). Leaving current image in place."
+            }
+      
+            throw "Deploy failed health gate; rollback attempted if previous image existed."
           }
         ''')
       }
+
       post {
         success {
           echo "Staging healthy at ${HEALTH_URL}. Image: ${APP_NAME}:${VERSION} (tag=${STAGING_IMAGE_TAG})."
