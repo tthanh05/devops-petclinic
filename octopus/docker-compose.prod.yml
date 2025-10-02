@@ -1,16 +1,14 @@
-# octopus/docker-compose.prod.yml
-# Compose v2 syntax (no top-level version key required)
-# NOTE: Octopus will substitute #{ImageTag} and #{ServerPort} (via "Substitute Variables in Files" step).
+# docker-compose.staging.yml (for Jenkins staging on port 8085)
+# Compose v2; uses COMPOSE_PROJECT_NAME=petclinic-ci from Jenkins env
 
 services:
   db:
     image: mysql:8.0
-    container_name: petclinic_db
     environment:
       MYSQL_ROOT_PASSWORD: "petclinic"
       MYSQL_DATABASE: "petclinic"
     volumes:
-      - mysql-data:/var/lib/mysql
+      - mysql-data-staging:/var/lib/mysql
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-ppetclinic"]
       interval: 10s
@@ -19,8 +17,7 @@ services:
     restart: unless-stopped
 
   app:
-    image: "spring-petclinic:#{ImageTag}"   # Jenkins passes ImageTag to Octopus; Octopus substitutes here
-    container_name: petclinic_app
+    image: "spring-petclinic:staging"
     depends_on:
       db:
         condition: service_healthy
@@ -31,8 +28,8 @@ services:
       spring.datasource.password: "petclinic"
       SERVER_PORT: "8080"
     ports:
-      - "#{ServerPort}:8080"                # Octopus substitutes
+      - "8085:8080"
     restart: unless-stopped
 
 volumes:
-  mysql-data:
+  mysql-data-staging:
