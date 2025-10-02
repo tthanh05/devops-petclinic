@@ -1,9 +1,9 @@
 # octopus/Deploy.ps1
-# Runs on the Windows target (Tentacle). It deploys/refreshes the compose stack cleanly.
+# Robust deploy: performs its own token substitution and checks port availability.
 
 $ErrorActionPreference = "Stop"
 
-# 1) Variables from Octopus
+# 1) Variables from Octopus (from Jenkins we pass --variable ImageTag=... --variable ServerPort=8086)
 $tag  = $OctopusParameters['ImageTag']
 $port = $OctopusParameters['ServerPort']
 
@@ -12,22 +12,51 @@ Write-Host "ImageTag   : $tag"
 Write-Host "ServerPort : $port"
 
 if ([string]::IsNullOrWhiteSpace($tag)) {
-  throw "ImageTag is empty. Ensure 'Substitute Variables in Files' includes octopus\docker-compose.prod.yml and that Jenkins passed --variable ImageTag=<value>."
+  throw "ImageTag is empty. Ensure Jenkins passes --variable ImageTag=<value> to Octopus."
+}
+if (-not $port) {
+  throw "ServerPort is empty. Ensure Jenkins passes --variable ServerPort=8086 (or set a project variable scoped to Production)."
 }
 
-# 2) Locate compose file (we ship it in the octopus/ folder)
-$composePath = Join-Path $PSScriptRoot 'docker-compose.prod.yml'
-if (-not (Test-Path $composePath)) { $composePath = 'octopus\docker-compose.prod.yml' }
+# 2) Locate base compose file and render a temp copy with tokens replaced
+$composeBase = Join-Path $PSScriptRoot 'docker-compose.prod.yml'
+if (-not (Test-Path $composeBase)) { $composeBase = 'octopus\docker-compose.prod.yml' }
+if (-not (Test-Path $composeBase)) { throw "Cannot find docker-compose.prod.yml" }
 
-Write-Host "Using compose file: $composePath"
+$composeRendered = Join-Path $env:TEMP ("docker-compose.prod.rendered.{0}.yml" -f ([guid]::NewGuid()))
+Write-Host "Base compose : $composeBase"
+Write-Host "Rendered file: $composeRendered"
 
-# 3) Clean slate to avoid "name already in use" conflicts
-docker compose -f $composePath down --remove-orphans
+# Do a simple, safe token replacement for #{ImageTag} and #{ServerPort}
+(Get-Content -Raw -LiteralPath $composeBase) `
+  -replace '#{ImageTag}',   [Regex]::Escape($tag) `
+  -replace '#{ServerPort}', [Regex]::Escape($port) `
+  | Set-Content -LiteralPath $composeRendered -Encoding UTF8
 
-# 4) Bring the stack up
-docker compose -f $composePath up -d
+# 3) Check whether $port is already bound on the host
+function Test-PortInUse([int]$p) {
+  try {
+    $lines = docker ps --format '{{.Ports}}' 2>$null
+    if ($LASTEXITCODE -ne 0) { return $false } # if Docker not running, don't block here
+    foreach ($ln in $lines) {
+      if ($ln -match "0\.0\.0\.0:$p->" -or $ln -match "\[::\]:$p->") { return $true }
+    }
+    return $false
+  } catch { return $false }
+}
 
-# 5) Simple health gate against the running app
+if (Test-PortInUse -p $port) {
+  Write-Error "Host port $port is already in use. Staging uses 8085; Production should use 8086. Free the port or set a different ServerPort."
+  throw "Port $port is in use"
+}
+
+# 4) Clean slate to avoid orphan conflicts within this project
+docker compose -f $composeRendered down --remove-orphans
+
+# 5) Bring the stack up (will use the rendered port and tag)
+docker compose -f $composeRendered up -d
+
+# 6) Health gate against the running app
 $healthUrl = "http://localhost:$port/actuator/health"
 $max = 150; $step = 5; $ok = $false
 Write-Host "Waiting up to $max sec for PROD health at $healthUrl ..."
@@ -44,11 +73,12 @@ for ($t=0; $t -lt $max; $t += $step) {
 
 if (-not $ok) {
   Write-Warning "Health check failed. Capturing diagnostics..."
-
   try {
-    docker compose -f $composePath ps
+    docker compose -f $composeRendered ps
     docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"
   } catch {}
-
   throw "Octopus: PROD health check failed"
 }
+
+# 7) Cleanup temp file
+try { Remove-Item -LiteralPath $composeRendered -Force -ErrorAction SilentlyContinue } catch {}
