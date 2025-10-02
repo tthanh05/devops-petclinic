@@ -168,6 +168,9 @@ pipeline {
           [void][int]::TryParse($env:HEALTH_INTERVAL_SEC, [ref]$int)
           if ($int -eq $null -or $int -le 0) { $int = 5 }
         
+          # Small warm-up before polling (DB just turned healthy; app may still be booting)
+          Start-Sleep -Seconds 5
+        
           $ok = $false
           Write-Host "Waiting up to $max sec for health at $url ..."
           for ($t=0; $t -lt $max; $t += $int) {
