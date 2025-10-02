@@ -15,25 +15,26 @@ pipeline {
     VERSION  = "${env.BUILD_NUMBER}-${GIT_SHA}"
     DC_CACHE = '.dc'
 
-    // ---- Staging (Compose) ----
+    // --- Deploy/Staging config ---
     DOCKER_COMPOSE_FILE = 'docker-compose.staging.yml'
-    STAGING_IMAGE_TAG   = 'staging'
-    PREV_IMAGE_TAG      = 'staging-prev'
+    STAGING_IMAGE_TAG   = 'staging'      // moving tag used by compose
+    PREV_IMAGE_TAG      = 'staging-prev' // rollback tag
+    // Switched to 8085 (host + container)
     HEALTH_URL          = 'http://localhost:8085/actuator/health'
     HEALTH_MAX_WAIT_SEC = '120'
     HEALTH_INTERVAL_SEC = '5'
-    COMPOSE_PROJECT_NAME = 'petclinic-ci'
 
-    // ---- Production (Octopus) ----
-    DOCKER_COMPOSE_FILE_PROD = 'docker-compose.prod.yml'
+    // --- Release/Production config (Octopus) ---
+    DOCKER_COMPOSE_FILE_PROD = 'octopus/docker-compose.prod.yml'
     PROD_HEALTH_URL          = 'http://localhost:8086/actuator/health'
-    PROD_HEALTH_MAX_WAIT_SEC = '150'
+    PROD_HEALTH_MAX_WAIT_SEC = '180'
     PROD_HEALTH_INTERVAL_SEC = '5'
   }
 
   stages {
-
-    stage('Checkout') { steps { checkout scm } }
+    stage('Checkout') {
+      steps { checkout scm }
+    }
 
     stage('Build') {
       steps {
@@ -41,19 +42,40 @@ pipeline {
         bat "${MVN} spring-javaformat:apply"
         bat "${MVN} -DskipTests -Dcheckstyle.skip=true clean package"
       }
-      post { success { archiveArtifacts artifacts: 'target\\*.jar', fingerprint: true } }
+      post {
+        success {
+          archiveArtifacts artifacts: 'target\\*.jar', fingerprint: true
+        }
+      }
     }
 
     stage('Test: Unit') {
-      steps { bat "${MVN} -Dcheckstyle.skip=true -DskipITs=true test" }
-      post { always { junit testResults: 'target/surefire-reports/*.xml', keepLongStdio: true } }
+      steps {
+        bat "${MVN} -Dcheckstyle.skip=true -DskipITs=true test"
+      }
+      post {
+        always {
+          junit testResults: 'target/surefire-reports/*.xml',
+                keepLongStdio: true,
+                allowEmptyResults: false
+        }
+      }
     }
 
     stage('Test: Integration') {
-      steps { bat "${MVN} -Dcheckstyle.skip=true -DskipITs=false -Djacoco.append=true failsafe:integration-test failsafe:verify" }
-      post { always { junit testResults: 'target/failsafe-reports/*.xml', keepLongStdio: true } }
+      steps {
+        bat "${MVN} -Dcheckstyle.skip=true -DskipITs=false -Djacoco.append=true failsafe:integration-test failsafe:verify"
+      }
+      post {
+        always {
+          junit testResults: 'target/failsafe-reports/*.xml',
+                keepLongStdio: true,
+                allowEmptyResults: false
+        }
+      }
     }
 
+    /* -------------------- SECURITY (SCA) -------------------- */
     stage('Security: Dependency Scan (OWASP)') {
       steps {
         bat """
@@ -68,16 +90,38 @@ pipeline {
       }
       post {
         always {
-          archiveArtifacts artifacts: 'target/dependency-check-report.* , target/dependency-check-junit.xml', allowEmptyArchive: true
-          publishHTML(target: [reportDir: 'target', reportFiles: 'dependency-check-report.html', reportName: 'OWASP Dependency-Check'])
+          archiveArtifacts artifacts: '''
+            target/dependency-check-report.html,
+            target/dependency-check-report.xml,
+            target/dependency-check-report.json,
+            target/dependency-check-junit.xml
+          '''.trim().replaceAll("\\s+", " "), fingerprint: true, allowEmptyArchive: true
+
+          publishHTML(target: [
+            reportDir: 'target',
+            reportFiles: 'dependency-check-report.html',
+            reportName: 'OWASP Dependency-Check',
+            keepAll: true,
+            allowMissing: false,
+            alwaysLinkToLastBuild: false
+          ])
+          archiveArtifacts artifacts: 'target/dependency-check-report/**, target/dependency-check-json*', allowEmptyArchive: true
           junit testResults: 'target/dependency-check-junit.xml', allowEmptyResults: true
+        }
+        failure {
+          echo 'High severity CVEs detected (CVSS >= 7).'
+        }
+        unsuccessful {
+          echo 'Review Dependency-Check results; only suppress genuine false positives.'
         }
       }
     }
 
+    /* -------------------- CODE QUALITY (SonarQube) -------------------- */
     stage('Code Quality: SonarQube') {
       steps {
         bat "${MVN} -Dcheckstyle.skip=true jacoco:report"
+
         withSonarQubeEnv('sonarqube-server') {
           withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
             bat """
@@ -90,18 +134,29 @@ pipeline {
             bat 'type .scannerwork\\report-task.txt'
           }
         }
-        archiveArtifacts artifacts: '.scannerwork/**', allowEmptyArchive: true
+        archiveArtifacts artifacts: '.scannerwork/**', fingerprint: false, allowEmptyArchive: true
       }
     }
 
     stage('Quality Gate') {
-      steps { timeout(time: 10, unit: 'MINUTES') { waitForQualityGate abortPipeline: true } }
+      steps {
+        timeout(time: 10, unit: 'MINUTES') {
+          waitForQualityGate abortPipeline: true
+        }
+      }
     }
 
     stage('Coverage Report') {
       steps {
         bat "${MVN} -Dcheckstyle.skip=true jacoco:report"
-        publishHTML(target: [reportDir: 'target/site/jacoco', reportFiles: 'index.html', reportName: 'JaCoCo Coverage'])
+        publishHTML(target: [
+          reportDir: 'target/site/jacoco',
+          reportFiles: 'index.html',
+          reportName: 'JaCoCo Coverage',
+          keepAll: true,
+          allowMissing: false,
+          alwaysLinkToLastBuild: false
+        ])
       }
     }
 
@@ -120,117 +175,89 @@ pipeline {
       }
     }
 
-    // Deploy stage: Compose + Health gate + Rollback
-    stage('Deploy: Staging (Compose 8085 + Health + Rollback)') {
+    /* ==================== DEPLOY (Infra-as-Code + Rollback) ==================== */
+    stage('Deploy: Staging (Docker Compose on 8085 with Health Gate + Rollback)') {
       steps {
         bat 'docker --version'
         bat 'docker compose version'
 
         bat """
+          REM --- Preserve previous staging image for rollback (if it exists)
           for /f "tokens=*" %%i in ('docker images -q %APP_NAME%:%STAGING_IMAGE_TAG%') do (
             docker image tag %APP_NAME%:%STAGING_IMAGE_TAG% %APP_NAME%:%PREV_IMAGE_TAG%
           )
+
+          REM --- Build new versioned image and retag to 'staging'
           docker build -t %APP_NAME%:%VERSION% -f Dockerfile .
           docker image tag %APP_NAME%:%VERSION% %APP_NAME%:%STAGING_IMAGE_TAG%
         """
-        // Hard cleanup for any stray old containers created outside this project (one-time guard)
-        powershell('''
-          $names = @("petclinic-db","petclinic_app","petclinic-db","petclinic-app")
-          foreach ($n in $names) {
-            $id = docker ps -a -q -f "name=^/$n$"
-            if ($id) {
-              Write-Host "Removing stray container $n ($id) to avoid name conflict..."
-              docker rm -f $id | Out-Null
-            }
-          }
-        ''')
-        bat """
-          docker compose -f %DOCKER_COMPOSE_FILE% down --remove-orphans
-          docker compose -f %DOCKER_COMPOSE_FILE% up -d --remove-orphans
-        """
 
+        // Deploy (or update) via compose
+        bat "docker compose -f %DOCKER_COMPOSE_FILE% up -d --remove-orphans"
+
+        // Health gate against host-exposed 8085
         powershell('''
-          $ErrorActionPreference = "Stop"
-        
-          # --- Inputs with PS5-safe fallbacks ---
-          $app     = if ($env:APP_NAME) { $env:APP_NAME } else { "spring-petclinic" }
-          $stag    = if ($env:STAGING_IMAGE_TAG) { $env:STAGING_IMAGE_TAG } else { "staging" }
-          $prev    = if ($env:PREV_IMAGE_TAG) { $env:PREV_IMAGE_TAG } else { "staging-prev" }
-          $compose = if ($env:DOCKER_COMPOSE_FILE) { $env:DOCKER_COMPOSE_FILE } else { "docker-compose.staging.yml" }
-          $url     = $env:HEALTH_URL
-        
-          # PS5-safe numeric defaults (no regex, no null-coalescing)
-          $max = $null
-          [void][int]::TryParse($env:HEALTH_MAX_WAIT_SEC, [ref]$max)
-          if ($max -eq $null -or $max -le 0) { $max = 180 }
-        
-          $int = $null
-          [void][int]::TryParse($env:HEALTH_INTERVAL_SEC, [ref]$int)
-          if ($int -eq $null -or $int -le 0) { $int = 5 }
-        
-          # Small warm-up before polling (DB just turned healthy; app may still be booting)
-          Start-Sleep -Seconds 5
-        
+          $max = [int]$env:HEALTH_MAX_WAIT_SEC
+          $interval = [int]$env:HEALTH_INTERVAL_SEC
           $ok = $false
-          Write-Host "Waiting up to $max sec for health at $url ..."
-          for ($t=0; $t -lt $max; $t += $int) {
+          Write-Host "Waiting up to $max sec for health at $($env:HEALTH_URL) ..."
+          for ($t = 0; $t -lt $max; $t += $interval) {
             try {
-              $r = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 5
-              if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 300) {
-                "Health OK (HTTP $($r.StatusCode))" | Tee-Object -FilePath health-check.log -Append
+              $resp = Invoke-WebRequest -Uri $env:HEALTH_URL -UseBasicParsing -TimeoutSec 5
+              if ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 300) {
+                Write-Host "Health OK (HTTP $($resp.StatusCode))"
                 $ok = $true; break
               }
             } catch {
-              Start-Sleep -Seconds $int; continue
+              Start-Sleep -Seconds $interval
+              continue
             }
-            Start-Sleep -Seconds $int
+            Start-Sleep -Seconds $interval
           }
-        
           if (-not $ok) {
-            Write-Warning "Health check FAILED. Capturing diagnostics..."
-            try {
-              docker compose -f $compose ps
-              $appName = (docker compose -f $compose ps --format json | ConvertFrom-Json | Where-Object { $_.Service -eq 'app' } | Select-Object -First 1 -ExpandProperty Name)
-              if ($appName) {
-                Write-Host "`n==== docker logs $appName (last 200) ===="
-                docker logs --tail 200 $appName
-                Write-Host "==== end logs ====`n"
-              }
-            } catch { }
-        
-            # --- SAFE ROLLBACK (only if previous image exists) ---
-            $prevImage = "${app}:${prev}"
-            $stagImage = "${app}:${stag}"
-            $hasPrev = (docker images -q $prevImage)
-            if ($hasPrev) {
-              Write-Host "Rolling back to previous image $prevImage ..."
-              docker image tag $prevImage $stagImage
-              docker compose -f $compose up -d --remove-orphans --force-recreate
-            } else {
-              Write-Warning "No previous image to roll back to ($prevImage not found). Leaving current image in place."
-            }
-        
-            throw "Deploy failed health gate; rollback attempted if previous image existed."
+            Write-Host "Health check FAILED. Rolling back to previous image tag..."
+            docker image tag $env:APP_NAME:$env:PREV_IMAGE_TAG $env:APP_NAME:$env:STAGING_IMAGE_TAG
+            docker compose -f $env:DOCKER_COMPOSE_FILE up -d --remove-orphans
+            throw "Deploy failed health gate; rolled back to previous image."
           }
         ''')
-
       }
       post {
         success {
-          echo "Staging healthy at ${HEALTH_URL}. Image=${APP_NAME}:${VERSION} (tag=${STAGING_IMAGE_TAG})."
-          archiveArtifacts artifacts: "${DOCKER_COMPOSE_FILE}, health-check.log", fingerprint: true, allowEmptyArchive: true
+          echo "Staging healthy at ${HEALTH_URL}. Image: ${APP_NAME}:${VERSION} (tag=${STAGING_IMAGE_TAG})."
+          archiveArtifacts artifacts: "${DOCKER_COMPOSE_FILE}", fingerprint: true, allowEmptyArchive: false
+        }
+        failure {
+          echo "Deploy failed; rollback attempted via tag ${PREV_IMAGE_TAG}."
         }
         always {
-          powershell('''
-            try { docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}" | Out-File docker-ps.txt -Encoding utf8 } catch {}
-            try { docker compose -f "$env:DOCKER_COMPOSE_FILE" ps | Out-File compose-ps.txt -Encoding utf8 } catch {}
-          ''')
-          archiveArtifacts artifacts: 'docker-ps.txt, compose-ps.txt', allowEmptyArchive: true
+          bat "docker ps --format \"table {{.Names}}\\t{{.Image}}\\t{{.Status}}\\t{{.Ports}}\""
+          bat "docker compose -f %DOCKER_COMPOSE_FILE% ps"
+          // Robust: no error if the stack failed to start
+          always {
+            bat 'docker ps --format "table {{.Names}}\\t{{.Image}}\\t{{.Status}}\\t{{.Ports}}"'
+            bat "docker compose -f %DOCKER_COMPOSE_FILE% ps"
+            // Robust: no error if the stack failed to start
+            powershell('''
+              $ids = docker compose -f $env:DOCKER_COMPOSE_FILE ps -q
+              if ($ids) {
+                foreach ($i in $ids) {
+                  docker logs --since=10m $i | Out-File -FilePath ("deploy-logs-" + $i + ".txt") -Encoding utf8
+                }
+              } else {
+                Write-Host "No compose containers to collect logs from."
+              }
+            ''')
+  archiveArtifacts artifacts: 'deploy-logs-*.txt', allowEmptyArchive: true
+}
+
+          archiveArtifacts artifacts: 'deploy-logs-*.txt', allowEmptyArchive: true
         }
       }
     }
+  }
 
-    // ================= RELEASE: Octopus (automated, env-specific) =================
+      /* ===================== RELEASE: Production via Octopus ===================== */
     stage('Release: Production (Octopus - tagged, versioned, env-specific)') {
       when { branch 'main' }
       steps {
@@ -238,7 +265,7 @@ pipeline {
           string(credentialsId: 'octopus_server', variable: 'OCTO_SERVER'),
           string(credentialsId: 'octopus_api',    variable: 'OCTO_API_KEY')
         ]) {
-          // Download portable Octopus CLI to workspace if missing
+          // Download portable Octopus CLI (Windows) if not already present
           powershell('''
             $ErrorActionPreference = "Stop"
             $dir = Join-Path $PWD "octo-cli"; $exe = Join-Path $dir "octo.exe"
@@ -254,9 +281,10 @@ pipeline {
           ''')
           script { env.OCTO = readFile('octo-path.txt').trim() }
 
-          // Pack the prod assets (include *everything* under octopus/)
+          // Pack release payload (octopus/** + Dockerfile + README*), push, create & deploy release
           bat """
             "%OCTO%" version
+
             "%OCTO%" pack ^
               --id="petclinic-prod" ^
               --version="%VERSION%" ^
@@ -265,10 +293,7 @@ pipeline {
               --include="octopus\\**" ^
               --include="Dockerfile" ^
               --include="README*"
-          """
 
-          // Push package, create release (pins package), deploy to Production
-          bat """
             "%OCTO%" push ^
               --server="%OCTO_SERVER%" ^
               --apiKey="%OCTO_API_KEY%" ^
@@ -288,23 +313,34 @@ pipeline {
               --variable="ImageTag=%VERSION%" --variable="ServerPort=8086"
           """
 
-          // Jenkins-side PROD health gate after Octopus finishes
+          // Jenkins-side PROD health gate (PS5-safe)
           powershell('''
-            $max = [int]$env:PROD_HEALTH_MAX_WAIT_SEC; $int = [int]$env:PROD_HEALTH_INTERVAL_SEC
-            $url = $env:PROD_HEALTH_URL; $ok = $false
+            $ErrorActionPreference = "Stop"
+            $max = 180; $interval = 5
+            if ($env:PROD_HEALTH_MAX_WAIT_SEC -and [int]::TryParse($env:PROD_HEALTH_MAX_WAIT_SEC, [ref]([int]$null))) { $max = [int]$env:PROD_HEALTH_MAX_WAIT_SEC }
+            if ($env:PROD_HEALTH_INTERVAL_SEC -and [int]::TryParse($env:PROD_HEALTH_INTERVAL_SEC, [ref]([int]$null))) { $interval = [int]$env:PROD_HEALTH_INTERVAL_SEC }
+            $url = $env:PROD_HEALTH_URL; $ok=$false
             Write-Host "Waiting up to $max sec for PROD health at $url ..."
-            for ($t=0; $t -lt $max; $t+=$int) {
+            Start-Sleep -Seconds 5
+            for ($t=0; $t -lt $max; $t+=$interval) {
               try {
                 $r = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 5
-                if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 300) { "PROD $($r.StatusCode) OK" | Tee-Object -FilePath health-check-prod.log -Append; $ok = $true; break }
-              } catch { Start-Sleep -Seconds $int; continue }
-              Start-Sleep -Seconds $int
+                if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 300) { "PROD Health OK (HTTP $($r.StatusCode))" | Tee-Object -FilePath health-check-prod.log -Append; $ok = $true; break }
+              } catch { Start-Sleep -Seconds $interval; continue }
+              Start-Sleep -Seconds $interval
             }
-            if (-not $ok) { throw "Production health check failed after Octopus release." }
+            if (-not $ok) {
+              Write-Warning "PROD health check failed. Capturing diagnostics..."
+              # Try to print compose ps from the Octopus project name we use in Deploy.ps1
+              try {
+                docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"
+              } catch {}
+              throw "Production health check failed after Octopus release."
+            }
           ''')
         }
 
-        // Tag the release in Git
+        // Tag the release in Git (proves 'tagged + versioned' promotion)
         withCredentials([usernamePassword(credentialsId: 'github_push', usernameVariable: 'GIT_USER', passwordVariable: 'GIT_PASS')]) {
           bat '''
             git config user.email "ci@jenkins"
@@ -318,24 +354,22 @@ pipeline {
       post {
         success {
           echo "Production released via Octopus. ${PROD_HEALTH_URL} healthy. Version=${VERSION}."
-          archiveArtifacts artifacts: 'octo-cli/**, octo-path.txt, health-check-prod.log, petclinic-prod.*.zip',
-                            allowEmptyArchive: true, fingerprint: true
+          archiveArtifacts artifacts: 'octo-cli/**, octo-path.txt, health-check-prod.log, petclinic-prod.*.zip', fingerprint: true, allowEmptyArchive: true
         }
         failure {
           echo "Production release failed (Octopus or health gate). Check logs/artifacts."
-          archiveArtifacts artifacts: 'octo-cli/**, octo-path.txt, petclinic-prod.*.zip',
-                            allowEmptyArchive: true
+          archiveArtifacts artifacts: 'octo-cli/**, octo-path.txt, petclinic-prod.*.zip', allowEmptyArchive: true
         }
       }
     }
-  }
+
 
   post {
     success {
-      echo "Build ${VERSION} passed all gates; staging (8085) deployed and production released via Octopus (8086)."
+      echo "Build ${VERSION} passed all gates and deployed to staging on 8085."
     }
     failure {
-      echo "Build ${VERSION} failed. If failure is in Tag/Deploy/Release, check credentials, Octopus CLI, or health gate."
+      echo "Build ${VERSION} failed. If failure is in Tag/Deploy, check credentials/Docker/health gate."
     }
   }
 }
