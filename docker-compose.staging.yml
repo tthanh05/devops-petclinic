@@ -1,38 +1,36 @@
+# docker-compose.staging.yml
+# Staging on port 8085; project name set from Jenkins: COMPOSE_PROJECT_NAME=petclinic-ci
+
 services:
   db:
     image: mysql:8.0
-    container_name: petclinic-db
-    command: --default-authentication-plugin=mysql_native_password --lower_case_table_names=1
     environment:
-      MYSQL_DATABASE: petclinic
-      MYSQL_ROOT_PASSWORD: root
-      MYSQL_USER: pet
-      MYSQL_PASSWORD: pet
-    # No host port publish to avoid 3306 conflicts
+      MYSQL_ROOT_PASSWORD: "petclinic"
+      MYSQL_DATABASE: "petclinic"
     volumes:
-      - petclinic_mysql_data:/var/lib/mysql
+      - mysql-data-staging:/var/lib/mysql
     healthcheck:
-      # Use CMD-SHELL so env expands inside the container; $$ escapes for compose
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -p$$MYSQL_ROOT_PASSWORD"]
-      interval: 5s
-      timeout: 3s
-      retries: 30
+      test: ["CMD", "mysqladmin", "ping", "-ppetclinic"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
 
   app:
-    image: spring-petclinic:staging
-    container_name: petclinic-app
+    image: "spring-petclinic:staging"
     depends_on:
       db:
         condition: service_healthy
     environment:
-      SPRING_DATASOURCE_URL: jdbc:mysql://db:3306/petclinic?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
-      SPRING_DATASOURCE_USERNAME: pet
-      SPRING_DATASOURCE_PASSWORD: pet
-      SPRING_JPA_HIBERNATE_DDL_AUTO: update
-      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,info
-      SERVER_PORT: "8085"
+      SPRING_PROFILES_ACTIVE: "mysql"
+      SPRING_DATASOURCE_URL: "jdbc:mysql://db:3306/petclinic?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC"
+      SPRING_DATASOURCE_USERNAME: "root"
+      SPRING_DATASOURCE_PASSWORD: "petclinic"
+      SPRING_SQL_INIT_MODE: "always"
+      SERVER_PORT: "8080"          # keep container at 8080
     ports:
-      - "8085:8085"
+      - "8085:8080"                # stage host port
+    restart: unless-stopped
 
 volumes:
-  petclinic_mysql_data:
+  mysql-data-staging:
