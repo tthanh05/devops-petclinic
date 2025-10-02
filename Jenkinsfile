@@ -178,63 +178,81 @@ pipeline {
           string(credentialsId: 'octopus_server', variable: 'OCTO_SERVER'),
           string(credentialsId: 'octopus_api',    variable: 'OCTO_API_KEY')
         ]) {
-
-          // 1) Create the package (zip) from repo assets used by Octopus step
-          powershell('''
-            $ErrorActionPreference = "Stop"
-            $pkg = "petclinic-prod.$env:VERSION.zip"
-            if (Test-Path $pkg) { Remove-Item $pkg -Force }
-            $files = @("docker-compose.prod.yml", "octopus\\Deploy.ps1")
-            foreach ($f in $files) { if (-not (Test-Path $f)) { throw "Missing required file: $f" } }
-            Compress-Archive -Path $files -DestinationPath $pkg -Force
-            Write-Host "Packaged: $pkg"
-          ''')
-
-          // 2) Download Octopus CLI (portable) to workspace (no Docker volume tricks)
+    
+          // 1) Ensure Octopus CLI is available (portable in workspace)
           powershell('''
             $ErrorActionPreference = "Stop"
             $cliDir = Join-Path $PWD "octo-cli"
-            $octo = Join-Path $cliDir "octo.exe"
+            $octo   = Join-Path $cliDir "octo.exe"
             if (-not (Test-Path $octo)) {
               New-Item -ItemType Directory -Force -Path $cliDir | Out-Null
-              $sources = @(
+              $urls = @(
                 "https://download.octopus.com/octopus-tools/9.4.7/OctopusTools.9.4.7.win-x64.zip",
                 "https://github.com/OctopusDeploy/OctopusCLI/releases/latest/download/OctopusTools.win-x64.zip"
               )
               $ok = $false
-              foreach ($u in $sources) {
+              foreach ($u in $urls) {
                 try {
                   $zip = Join-Path $cliDir "octo.zip"
                   Invoke-WebRequest -Uri $u -OutFile $zip -UseBasicParsing -Headers @{ "User-Agent" = "curl/8.0 jenkins" }
                   Add-Type -AssemblyName System.IO.Compression.FileSystem
                   [IO.Compression.ZipFile]::ExtractToDirectory($zip, $cliDir, $true)
                   if (Test-Path $octo) { $ok = $true; break }
-                } catch { Write-Warning "Octo download failed: $u  ($($_.Exception.Message))"; continue }
+                } catch {
+                  Write-Warning "Octopus CLI download failed from $u : $($_.Exception.Message)"
+                }
               }
               if (-not $ok) { throw "Could not download Octopus CLI." }
             }
             "$octo" | Out-File -FilePath "octo-path.txt" -Encoding ascii
           ''')
-
+    
           script { env.OCTO = readFile('octo-path.txt').trim() }
-
-          // 3) Push package, create release, deploy to Production (fully automated)
+    
+          // 2) Pack the release assets WITH the octopus/ folder (use Octopus CLI pack)
           bat """
             "%OCTO%" version
-
-            "%OCTO%" push --server="%OCTO_SERVER%" --apiKey="%OCTO_API_KEY%" ^
-              --package="petclinic-prod.%VERSION%.zip" --overwrite-mode=OverwriteExisting
-
-            "%OCTO%" create-release --server="%OCTO_SERVER%" --apiKey="%OCTO_API_KEY%" ^
-              --project="Petclinic" --version="%VERSION%" --packageVersion="%VERSION%" --ignoreExisting
-
-            "%OCTO%" deploy-release --server="%OCTO_SERVER%" --apiKey="%OCTO_API_KEY%" ^
-              --project="Petclinic" --version="%VERSION%" --deployTo="Production" ^
-              --guidedFailure=False --progress --waitForDeployment ^
-              --variable="ImageTag=%VERSION%" --variable="ServerPort=8086"
+    
+            REM Build petclinic-prod.%VERSION%.zip, keeping the octopus\\ folder
+            "%OCTO%" pack ^
+              --id="petclinic-prod" ^
+              --version="%VERSION%" ^
+              --format="Zip" ^
+              --basePath="." ^
+              --include="docker-compose.prod.yml" ^
+              --include="octopus\\**"
+    
+            REM 3) Push package to Octopus built-in feed
+            "%OCTO%" push ^
+              --server="%OCTO_SERVER%" ^
+              --apiKey="%OCTO_API_KEY%" ^
+              --package="petclinic-prod.%VERSION%.zip" ^
+              --overwrite-mode=OverwriteExisting
+    
+            REM 4) Create (or reuse) the release
+            "%OCTO%" create-release ^
+              --server="%OCTO_SERVER%" ^
+              --apiKey="%OCTO_API_KEY%" ^
+              --project="Petclinic" ^
+              --version="%VERSION%" ^
+              --packageVersion="%VERSION%" ^
+              --ignoreExisting
+    
+            REM 5) Deploy the release to Production with env-specific vars
+            "%OCTO%" deploy-release ^
+              --server="%OCTO_SERVER%" ^
+              --apiKey="%OCTO_API_KEY%" ^
+              --project="Petclinic" ^
+              --version="%VERSION%" ^
+              --deployTo="Production" ^
+              --guidedFailure=False ^
+              --progress ^
+              --waitForDeployment ^
+              --variable="ImageTag=%VERSION%" ^
+              --variable="ServerPort=8086"
           """
-
-          // 4) Independent health gate (Jenkins checks PROD URL)
+    
+          // 6) Independent prod health gate (Jenkins verifies /actuator/health)
           powershell('''
             $max = [int]$env:PROD_HEALTH_MAX_WAIT_SEC
             $int = [int]$env:PROD_HEALTH_INTERVAL_SEC
@@ -243,14 +261,20 @@ pipeline {
             for ($t=0; $t -lt $max; $t+=$int) {
               try {
                 $r = Invoke-WebRequest -Uri $env:PROD_HEALTH_URL -UseBasicParsing -TimeoutSec 5
-                if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 300) { "PROD Health OK (HTTP $($r.StatusCode))" | Tee-Object -FilePath health-check-prod.log -Append; $ok = $true; break }
-              } catch { Start-Sleep -Seconds $int; continue }
+                if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 300) {
+                  "PROD Health OK (HTTP $($r.StatusCode))" | Tee-Object -FilePath health-check-prod.log -Append
+                  $ok = $true; break
+                }
+              } catch {
+                Start-Sleep -Seconds $int
+                continue
+              }
               Start-Sleep -Seconds $int
             }
             if (-not $ok) { throw "Production health check failed after Octopus release." }
           ''')
-
-          // 5) Git tag to mark the production release
+    
+          // 7) Git tag the production release
           withCredentials([usernamePassword(credentialsId: 'github_push', usernameVariable: 'GIT_USER', passwordVariable: 'GIT_PASS')]) {
             bat '''
               git config user.email "ci@jenkins"
@@ -265,11 +289,13 @@ pipeline {
       post {
         success {
           echo "Production released via Octopus. ${PROD_HEALTH_URL} healthy. Version=${VERSION}."
-          archiveArtifacts artifacts: 'octo-cli/**, octo-path.txt, health-check-prod.log, petclinic-prod.*.zip', allowEmptyArchive: true, fingerprint: true
+          archiveArtifacts artifacts: 'octo-cli/**, octo-path.txt, health-check-prod.log, petclinic-prod.*.zip',
+                            allowEmptyArchive: true, fingerprint: true
         }
         failure {
           echo "Production release failed (Octopus or health gate). Check logs/artifacts."
-          archiveArtifacts artifacts: 'octo-cli/**, octo-path.txt, petclinic-prod.*.zip', allowEmptyArchive: true
+          archiveArtifacts artifacts: 'octo-cli/**, octo-path.txt, petclinic-prod.*.zip',
+                            allowEmptyArchive: true
         }
       }
     }
