@@ -133,7 +133,10 @@ pipeline {
           docker image tag %APP_NAME%:%VERSION% %APP_NAME%:%STAGING_IMAGE_TAG%
         """
 
-        bat "docker compose -f %DOCKER_COMPOSE_FILE% up -d --remove-orphans"
+        bat """
+          docker compose -f %DOCKER_COMPOSE_FILE% down --remove-orphans
+          docker compose -f %DOCKER_COMPOSE_FILE% up -d --remove-orphans
+        """
 
         powershell('''
           $max = [int]$env:HEALTH_MAX_WAIT_SEC
