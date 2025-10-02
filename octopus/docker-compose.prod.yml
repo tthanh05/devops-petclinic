@@ -1,14 +1,14 @@
-# docker-compose.staging.yml (for Jenkins staging on port 8085)
-# Compose v2; uses COMPOSE_PROJECT_NAME=petclinic-ci from Jenkins env
+# octopus/docker-compose.prod.yml
+# Octopus substitutes ImageTag and ServerPort OR our Deploy.ps1 will force them.
 
 services:
   db:
     image: mysql:8.0
+    volumes:
+      - octopus_mysql-data-staging:/var/lib/mysql
     environment:
       MYSQL_ROOT_PASSWORD: "petclinic"
       MYSQL_DATABASE: "petclinic"
-    volumes:
-      - mysql-data-staging:/var/lib/mysql
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-ppetclinic"]
       interval: 10s
@@ -17,19 +17,21 @@ services:
     restart: unless-stopped
 
   app:
-    image: "spring-petclinic:staging"
+    image: "spring-petclinic:#{ImageTag}"
     depends_on:
       db:
         condition: service_healthy
     environment:
+      # Spring Boot reads uppercase underscore envs:
       SPRING_PROFILES_ACTIVE: "mysql"
-      spring.datasource.url: "jdbc:mysql://db:3306/petclinic?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC"
-      spring.datasource.username: "root"
-      spring.datasource.password: "petclinic"
-      SERVER_PORT: "8080"
+      SPRING_DATASOURCE_URL: "jdbc:mysql://db:3306/petclinic?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC"
+      SPRING_DATASOURCE_USERNAME: "root"
+      SPRING_DATASOURCE_PASSWORD: "petclinic"
+      SPRING_SQL_INIT_MODE: "always"   # ensure schema/data init when profile=mysql
+      SERVER_PORT: "8080"              # container internal port
     ports:
-      - "8085:8080"
+      - "#{ServerPort}:8080"           # host:container (Production should be 8086)
     restart: unless-stopped
 
 volumes:
-  mysql-data-staging:
+  octopus_mysql-data-staging:
