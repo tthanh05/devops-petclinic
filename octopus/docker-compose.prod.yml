@@ -1,39 +1,38 @@
+version: "3.9"
+
 services:
   db:
     image: mysql:8.0
-    container_name: petclinic-db-prod
-    command: --default-authentication-plugin=mysql_native_password --lower_case_table_names=1
+    container_name: petclinic-db
     environment:
-      MYSQL_DATABASE: petclinic_prod
-      MYSQL_ROOT_PASSWORD: rootprod
-      MYSQL_USER: pet
-      MYSQL_PASSWORD: petprod
+      MYSQL_ROOT_PASSWORD: petclinic
+      MYSQL_DATABASE: petclinic
     volumes:
-      - petclinic_mysql_data_prod:/var/lib/mysql
+      - mysql-data:/var/lib/mysql
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -p$$MYSQL_ROOT_PASSWORD"]
-      interval: 5s
-      timeout: 3s
-      retries: 30
+      test: ["CMD", "mysqladmin", "ping", "-ppetclinic"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
 
   app:
-    # Octopus replaces #{ImageTag} with the release variable we pass from Jenkins
+    # Image tag is injected by Octopus (Jenkins passes --variable ImageTag=%VERSION%)
     image: spring-petclinic:#{ImageTag}
-    container_name: petclinic-app-prod
+    container_name: petclinic-app
     depends_on:
       db:
         condition: service_healthy
     environment:
-      SPRING_PROFILES_ACTIVE: prod
-      SPRING_DATASOURCE_URL: jdbc:mysql://db:3306/petclinic_prod?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
-      SPRING_DATASOURCE_USERNAME: pet
-      SPRING_DATASOURCE_PASSWORD: petprod
-      SPRING_JPA_HIBERNATE_DDL_AUTO: update
-      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,info,prometheus
-      # Octopus variable for port (we also pass this from Jenkins)
-      SERVER_PORT: "#{ServerPort}"
+      SPRING_PROFILES_ACTIVE: mysql
+      spring.datasource.url: jdbc:mysql://petclinic-db:3306/petclinic?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      spring.datasource.username: root
+      spring.datasource.password: petclinic
+      SERVER_PORT: "8080"
+    # Host:Container — host port is injected by Octopus
     ports:
-      - "#{ServerPort}:#{ServerPort}"
+      - "#{ServerPort}:8080"
+    restart: unless-stopped
 
 volumes:
-  petclinic_mysql_data_prod:
+  mysql-data:
