@@ -39,4 +39,19 @@ for ($t=0; $t -lt $max; $t += $step) {
   } catch { Start-Sleep -Seconds $step; continue }
   Start-Sleep -Seconds $step
 }
-if (-not $ok) { throw "Octopus: PROD health check failed" }
+if (-not $ok) { 
+Write-Host "`n=== DIAGNOSTICS (on health failure) ==="
+docker compose -f $composePath ps | Write-Host
+
+Write-Host "`n-- Docker ps --"
+docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}" | Write-Host
+
+Write-Host "`n-- app logs (last 200) --"
+$AppName = if (Get-Content $composePath | Select-String -Quiet 'container_name:\s*petclinic-app') { 'petclinic-app' } else { (docker compose -f $composePath ps -q app | ForEach-Object { docker ps --filter "id=$_ " --format "{{.Names}}"}) }
+if ($AppName) { docker logs --tail 200 $AppName 2>$null | Write-Host } else { Write-Host "No app container found." }
+
+Write-Host "`n-- db logs (last 100) --"
+$DbName = if (Get-Content $composePath | Select-String -Quiet 'container_name:\s*petclinic-db') { 'petclinic-db' } else { (docker compose -f $composePath ps -q db  | ForEach-Object { docker ps --filter "id=$_ " --format "{{.Names}}"}) }
+if ($DbName) { docker logs --tail 100 $DbName 2>$null | Write-Host } else { Write-Host "No db container found." }
+
+throw "Octopus: PROD health check failed" }
