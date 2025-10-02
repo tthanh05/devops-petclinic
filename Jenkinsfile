@@ -39,18 +39,14 @@ pipeline {
         bat "${MVN} spring-javaformat:apply"
         bat "${MVN} -DskipTests -Dcheckstyle.skip=true clean package"
       }
-      post {
-        success { archiveArtifacts artifacts: 'target\\*.jar', fingerprint: true }
-      }
+      post { success { archiveArtifacts artifacts: 'target\\*.jar', fingerprint: true } }
     }
 
     stage('Test: Unit') {
       steps { bat "${MVN} -Dcheckstyle.skip=true -DskipITs=true test" }
       post {
         always {
-          junit testResults: 'target/surefire-reports/*.xml',
-                keepLongStdio: true,
-                allowEmptyResults: false
+          junit testResults: 'target/surefire-reports/*.xml', keepLongStdio: true, allowEmptyResults: false
         }
       }
     }
@@ -61,9 +57,7 @@ pipeline {
       }
       post {
         always {
-          junit testResults: 'target/failsafe-reports/*.xml',
-                keepLongStdio: true,
-                allowEmptyResults: false
+          junit testResults: 'target/failsafe-reports/*.xml', keepLongStdio: true, allowEmptyResults: false
         }
       }
     }
@@ -88,8 +82,7 @@ pipeline {
             target/dependency-check-report.xml,
             target/dependency-check-report.json,
             target/dependency-check-junit.xml
-          '''.trim().replaceAll("\\s+", " "),
-          fingerprint: true, allowEmptyArchive: true
+          '''.trim().replaceAll("\\s+", " "), fingerprint: true, allowEmptyArchive: true
 
           publishHTML(target: [
             reportDir: 'target',
@@ -100,8 +93,7 @@ pipeline {
             alwaysLinkToLastBuild: false
           ])
 
-          archiveArtifacts artifacts: 'target/dependency-check-report/**, target/dependency-check-json*',
-                           allowEmptyArchive: true
+          archiveArtifacts artifacts: 'target/dependency-check-report/**, target/dependency-check-json*', allowEmptyArchive: true
           junit testResults: 'target/dependency-check-junit.xml', allowEmptyResults: true
         }
         failure { echo 'High severity CVEs detected (CVSS >= 7).' }
@@ -113,7 +105,6 @@ pipeline {
     stage('Code Quality: SonarQube') {
       steps {
         bat "${MVN} -Dcheckstyle.skip=true jacoco:report"
-
         withSonarQubeEnv('sonarqube-server') {
           withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
             bat """
@@ -131,11 +122,7 @@ pipeline {
     }
 
     stage('Quality Gate') {
-      steps {
-        timeout(time: 10, unit: 'MINUTES') {
-          waitForQualityGate abortPipeline: true
-        }
-      }
+      steps { timeout(time: 10, unit: 'MINUTES') { waitForQualityGate abortPipeline: true } }
     }
 
     stage('Coverage Report') {
@@ -174,11 +161,11 @@ pipeline {
         bat 'docker compose version'
 
         bat """
-          for /f "tokens=*" %%i in ('docker images -q %APP_NAME%:staging') do (
-            docker image tag %APP_NAME%:staging %APP_NAME%:staging-prev
+          for /f "tokens=*" %%i in ('docker images -q %APP_NAME%:%STAGING_IMAGE_TAG%') do (
+            docker image tag %APP_NAME%:%STAGING_IMAGE_TAG% %APP_NAME%:%PREV_IMAGE_TAG%
           )
           docker build -t %APP_NAME%:%VERSION% -f Dockerfile .
-          docker image tag %APP_NAME%:%VERSION% %APP_NAME%:staging
+          docker image tag %APP_NAME%:%VERSION% %APP_NAME%:%STAGING_IMAGE_TAG%
         """
         bat "docker compose -f %DOCKER_COMPOSE_FILE% up -d --remove-orphans"
 
@@ -194,7 +181,7 @@ pipeline {
           }
           if (-not $ok) {
             Write-Host "Health check FAILED. Rolling back..."
-            docker image tag $env:APP_NAME:staging-prev $env:APP_NAME:staging
+            docker image tag $env:APP_NAME:$env:PREV_IMAGE_TAG $env:APP_NAME:$env:STAGING_IMAGE_TAG
             docker compose -f $env:DOCKER_COMPOSE_FILE up -d --remove-orphans
             throw "Deploy failed health gate; rolled back."
           }
@@ -219,50 +206,68 @@ pipeline {
 
     /* ==================== RELEASE (Production via Octopus Deploy) ==================== */
     stage('Release: Production (Octopus - tagged, versioned, env-specific)') {
-      when { branch 'main' } // only release from main
+      when { branch 'main' } // release only from main
       steps {
         withCredentials([
           string(credentialsId: 'octopus_server', variable: 'OCTO_SERVER'),
           string(credentialsId: 'octopus_api',    variable: 'OCTO_API_KEY')
         ]) {
-          // Pull CLI container (no local octo.exe required)
+
+          // Compute a WSL-style path for the current workspace (so Docker on Windows can mount it)
+          bat '''
+            @echo off
+            for /f "delims=" %%P in ('powershell -NoProfile -Command "$p=(Get-Location).Path; $p=$p -replace \'\\\\\', \'/\'; $d=$p.Substring(0,1).ToLower(); $r=$p.Substring(2); Write-Output ('//' + $d + $r)"') do set "WSLPATH=%%P"
+            echo Using mount src: %WSLPATH%>octo-mount.txt
+          '''
+          script { env.WSLPATH = readFile('octo-mount.txt').trim().replace('Using mount src: ','') }
+
+          // Pull Octopus CLI container (tiny) and run all CLI operations through it
           bat 'docker pull octopusdeploy/octo:latest'
 
-          // --- Fallback: copy just the needed files to a short, safe path to avoid WSL2 mount issues
-          bat '''
-            if not exist C:\\octo-pack mkdir C:\\octo-pack
-            copy /Y docker-compose.prod.yml C:\\octo-pack\\ >nul
-            if not exist C:\\octo-pack\\octopus mkdir C:\\octo-pack\\octopus
-            copy /Y octopus\\Deploy.ps1 C:\\octo-pack\\octopus\\ >nul
-          '''
+          // 1) Pack (compose + Deploy.ps1)
+          bat """
+            docker run --rm -v "%WSLPATH%":/work -w /work octopusdeploy/octo:latest version
 
-          // Use //c/octo-pack mount (works reliably on Docker Desktop/WSL2)
-          bat '''
-            set SRCPATH=//c/octo-pack
-
-            docker run --rm -v "%SRCPATH%":/work -w /work octopusdeploy/octo:latest version
-
-            docker run --rm -v "%SRCPATH%":/work -w /work octopusdeploy/octo:latest ^
+            docker run --rm -v "%WSLPATH%":/work -w /work octopusdeploy/octo:latest ^
               pack --id="petclinic-prod" --version=%VERSION% --format=Zip ^
-              --basePath=. --include="docker-compose.prod.yml" --include="octopus/Deploy.ps1"
+              --basePath=. --include="docker-compose.prod.yml" --include="octopus\\\\Deploy.ps1"
+          """
 
-            docker run --rm -v "%SRCPATH%":/work -w /work octopusdeploy/octo:latest ^
+          // 2) Push to built-in feed
+          bat """
+            docker run --rm -v "%WSLPATH%":/work -w /work octopusdeploy/octo:latest ^
               push --server=%OCTO_SERVER% --apiKey=%OCTO_API_KEY% ^
               --package="petclinic-prod.%VERSION%.zip"
+          """
 
+          // 2b) Verify the package exists (fail fast if not)
+          bat """
+            docker run --rm octopusdeploy/octo:latest ^
+              list-packages --server=%OCTO_SERVER% --apiKey=%OCTO_API_KEY% ^
+              --packageId="petclinic-prod" --filter=%VERSION% --limit=1 || exit /b 1
+          """
+
+          // 3) Create/Reuse the release with that exact package version
+          bat """
             docker run --rm octopusdeploy/octo:latest ^
               create-release --server=%OCTO_SERVER% --apiKey=%OCTO_API_KEY% ^
               --project="Petclinic" --version=%VERSION% --packageVersion=%VERSION% --ignoreExisting
+          """
 
-            docker run --rm octopusdeploy/octo:latest ^
-              deploy-release --server=%OCTO_SERVER% --apiKey=%OCTO_API_KEY% ^
-              --project="Petclinic" --version=%VERSION% --deployTo="Production" ^
-              --progress --waitForDeployment --guidedFailure=True ^
-              --variable="ImageTag=%VERSION%" --variable="ServerPort=8086"
-          '''
+          // 4) Deploy to Production with env-specific variables and a hard timeout (no guided failure)
+          timeout(time: 20, unit: 'MINUTES') {
+            bat """
+              docker run --rm octopusdeploy/octo:latest ^
+                deploy-release --server=%OCTO_SERVER% --apiKey=%OCTO_API_KEY% ^
+                --project="Petclinic" --version=%VERSION% --deployTo="Production" ^
+                --progress --waitForDeployment --guidedFailure=False ^
+                --deploymentTimeout="00:15:00" --cancelOnTimeout ^
+                --variable="ImageTag=%VERSION%" --variable="ServerPort=8086"
+            """
+          }
         }
 
-        // --- Post-release health gate (Jenkins validates prod URL)
+        // Jenkins-side health verification of PROD
         powershell('''
           $max = [int]$env:PROD_HEALTH_MAX_WAIT_SEC; $interval = [int]$env:PROD_HEALTH_INTERVAL_SEC; $ok = $false
           Write-Host "Waiting up to $max sec for PROD health at $($env:PROD_HEALTH_URL) ..."
@@ -277,7 +282,7 @@ pipeline {
           "PROD Health OK" | Tee-Object -FilePath health-check-prod.log -Append
         ''')
 
-        // --- Annotated Git tag for the production release
+        // Annotated Git tag for the production release
         withCredentials([usernamePassword(credentialsId: 'github_push', usernameVariable: 'GIT_USER', passwordVariable: 'GIT_PASS')]) {
           bat '''
             git config user.email "ci@jenkins"
@@ -291,11 +296,9 @@ pipeline {
       post {
         success {
           echo "Production released via Octopus. ${PROD_HEALTH_URL} healthy. Version=${VERSION}."
-          archiveArtifacts artifacts: "${DOCKER_COMPOSE_FILE_PROD}, health-check-prod.log", fingerprint: true, allowEmptyArchive: true
+          archiveArtifacts artifacts: "${DOCKER_COMPOSE_FILE_PROD}, health-check-prod.log, octo-mount.txt", fingerprint: true, allowEmptyArchive: true
         }
-        failure {
-          echo "Production release failed (Octopus or health gate). Check logs/artifacts."
-        }
+        failure { echo "Production release failed (Octopus or health gate). Check logs/artifacts." }
       }
     }
   }
