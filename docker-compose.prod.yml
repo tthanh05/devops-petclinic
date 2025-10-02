@@ -1,0 +1,39 @@
+services:
+  db:
+    image: mysql:8.0
+    container_name: petclinic-db-prod
+    command: --default-authentication-plugin=mysql_native_password --lower_case_table_names=1
+    environment:
+      MYSQL_DATABASE: petclinic_prod
+      MYSQL_ROOT_PASSWORD: rootprod
+      MYSQL_USER: pet
+      MYSQL_PASSWORD: petprod
+    # DB is internal-only in prod compose (no host port publish)
+    volumes:
+      - petclinic_mysql_data_prod:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -p$$MYSQL_ROOT_PASSWORD"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  app:
+    image: spring-petclinic:prod             # moving tag advanced by the Release stage
+    container_name: petclinic-app-prod
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SPRING_DATASOURCE_URL: jdbc:mysql://db:3306/petclinic_prod?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      SPRING_DATASOURCE_USERNAME: pet
+      SPRING_DATASOURCE_PASSWORD: petprod
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,info,prometheus
+      SERVER_PORT: "8086"
+    ports:
+      - "8086:8086"
+    # (optional) you can add an app healthcheck if your base image has curl/wget installed
+
+volumes:
+  petclinic_mysql_data_prod:
