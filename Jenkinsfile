@@ -231,12 +231,11 @@ pipeline {
     
             REM 4) Create (or reuse) the release
             "%OCTO%" create-release ^
-              --server="%OCTO_SERVER%" ^
-              --apiKey="%OCTO_API_KEY%" ^
-              --project="Petclinic" ^
-              --version="%VERSION%" ^
-              --packageVersion="%VERSION%" ^
-              --ignoreExisting
+            --server="%OCTO_SERVER%" --apiKey="%OCTO_API_KEY%" ^
+            --project="Petclinic" --version="%VERSION%" ^
+            --package="petclinic-prod:%VERSION%" ^
+            --ignoreExisting
+
     
             REM 5) Deploy the release to Production with env-specific vars
             "%OCTO%" deploy-release ^
