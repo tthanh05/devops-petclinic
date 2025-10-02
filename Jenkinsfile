@@ -120,97 +120,49 @@ pipeline {
     }
 
     // Deploy stage: Compose + Health gate + Rollback
-    // stage('Deploy: Staging (Compose 8085 + Health + Rollback)') {
-    //   steps {
-    //     bat 'docker --version'
-    //     bat 'docker compose version'
-
-    //     bat """
-    //       // for /f "tokens=*" %%i in ('docker images -q %APP_NAME%:%STAGING_IMAGE_TAG%') do (
-    //       //   docker image tag %APP_NAME%:%STAGING_IMAGE_TAG% %APP_NAME%:%PREV_IMAGE_TAG%
-    //       // )
-    //       docker build -t %APP_NAME%:%VERSION% -f Dockerfile .
-    //       docker image tag %APP_NAME%:%VERSION% %APP_NAME%:staging
-    //       // docker image tag %APP_NAME%:%VERSION% %APP_NAME%:%STAGING_IMAGE_TAG%
-    //     """
-
-    //     bat """
-    //       docker compose -f %DOCKER_COMPOSE_FILE% down --remove-orphans
-    //       docker compose -f %DOCKER_COMPOSE_FILE% up -d --remove-orphans
-    //     """
-
-    //     powershell('''
-    //       $max = [int]$env:HEALTH_MAX_WAIT_SEC
-    //       $int = [int]$env:HEALTH_INTERVAL_SEC
-    //       $ok = $false
-    //       Write-Host "Waiting up to $max sec for health at $($env:HEALTH_URL) ..."
-    //       for ($t=0; $t -lt $max; $t += $int) {
-    //         try {
-    //           $r = Invoke-WebRequest -Uri $env:HEALTH_URL -UseBasicParsing -TimeoutSec 5
-    //           if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 300) { "Health OK (HTTP $($r.StatusCode))" | Tee-Object -FilePath health-check.log -Append; $ok = $true; break }
-    //         } catch { Start-Sleep -Seconds $int; continue }
-    //         Start-Sleep -Seconds $int
-    //       }
-    //       if (-not $ok) {
-    //         Write-Host "Health check FAILED. Rolling back..."
-    //         // docker image tag $env:APP_NAME:$env:PREV_IMAGE_TAG $env:APP_NAME:$env:STAGING_IMAGE_TAG
-    //         // docker compose -f $env:DOCKER_COMPOSE_FILE up -d --remove-orphans
-    //         throw "Deploy failed health gate; rolled back to previous image."
-    //       }
-    //     ''')
-    //   }
-    //   post {
-    //     success {
-    //       echo "Staging healthy at ${HEALTH_URL}. Image=${APP_NAME}:${VERSION} (tag=${STAGING_IMAGE_TAG})."
-    //       archiveArtifacts artifacts: "${DOCKER_COMPOSE_FILE}, health-check.log", fingerprint: true, allowEmptyArchive: true
-    //     }
-    //     always {
-    //       powershell('''
-    //         try { docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}" | Out-File docker-ps.txt -Encoding utf8 } catch {}
-    //         try { docker compose -f "$env:DOCKER_COMPOSE_FILE" ps | Out-File compose-ps.txt -Encoding utf8 } catch {}
-    //       ''')
-    //       archiveArtifacts artifacts: 'docker-ps.txt, compose-ps.txt', allowEmptyArchive: true
-    //     }
-    //   }
-    // }
-
-    /* ===================== STAGING ===================== */
-    stage('Deploy: Staging (clean down + up on 8085)') {
+    stage('Deploy: Staging (Compose 8085 + Health + Rollback)') {
       steps {
         bat 'docker --version'
         bat 'docker compose version'
 
-        // Build & tag local image
         bat """
+          for /f "tokens=*" %%i in ('docker images -q %APP_NAME%:%STAGING_IMAGE_TAG%') do (
+            docker image tag %APP_NAME%:%STAGING_IMAGE_TAG% %APP_NAME%:%PREV_IMAGE_TAG%
+          )
           docker build -t %APP_NAME%:%VERSION% -f Dockerfile .
           docker image tag %APP_NAME%:%VERSION% %APP_NAME%:staging
+          // docker image tag %APP_NAME%:%VERSION% %APP_NAME%:%STAGING_IMAGE_TAG%
         """
 
-        // Ensure clean slate to avoid "name already in use" conflicts
         bat """
           docker compose -f %DOCKER_COMPOSE_FILE% down --remove-orphans
           docker compose -f %DOCKER_COMPOSE_FILE% up -d --remove-orphans
         """
 
-        // Health gate
         powershell('''
-          $max = [int]$env:HEALTH_MAX_WAIT_SEC; $int = [int]$env:HEALTH_INTERVAL_SEC
-          $url = $env:HEALTH_URL; $ok = $false
-          Write-Host "Waiting up to $max sec for STAGING health at $url ..."
-          for ($t=0; $t -lt $max; $t+=$int) {
+          $max = [int]$env:HEALTH_MAX_WAIT_SEC
+          $int = [int]$env:HEALTH_INTERVAL_SEC
+          $ok = $false
+          Write-Host "Waiting up to $max sec for health at $($env:HEALTH_URL) ..."
+          for ($t=0; $t -lt $max; $t += $int) {
             try {
-              $r = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 5
-              if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 300) { "$($r.StatusCode) OK" | Tee-Object -FilePath health-check.log -Append; $ok = $true; break }
+              $r = Invoke-WebRequest -Uri $env:HEALTH_URL -UseBasicParsing -TimeoutSec 5
+              if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 300) { "Health OK (HTTP $($r.StatusCode))" | Tee-Object -FilePath health-check.log -Append; $ok = $true; break }
             } catch { Start-Sleep -Seconds $int; continue }
             Start-Sleep -Seconds $int
           }
-          if (-not $ok) { throw "STAGING health check failed." }
+          if (-not $ok) {
+            Write-Host "Health check FAILED. Rolling back..."
+            docker image tag $env:APP_NAME:$env:PREV_IMAGE_TAG $env:APP_NAME:$env:STAGING_IMAGE_TAG
+            docker compose -f $env:DOCKER_COMPOSE_FILE up -d --remove-orphans
+            throw "Deploy failed health gate; rolled back to previous image."
+          }
         ''')
       }
       post {
         success {
-          echo "Staging healthy at ${HEALTH_URL}. Image: ${APP_NAME}:${VERSION} (tag=staging)."
-          archiveArtifacts artifacts: "${DOCKER_COMPOSE_FILE}, health-check.log", fingerprint: true
+          echo "Staging healthy at ${HEALTH_URL}. Image=${APP_NAME}:${VERSION} (tag=${STAGING_IMAGE_TAG})."
+          archiveArtifacts artifacts: "${DOCKER_COMPOSE_FILE}, health-check.log", fingerprint: true, allowEmptyArchive: true
         }
         always {
           powershell('''
