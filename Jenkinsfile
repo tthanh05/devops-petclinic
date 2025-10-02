@@ -151,19 +151,19 @@ pipeline {
 
         powershell('''
           $ErrorActionPreference = "Stop"
-
-          # --- Inputs (fallbacks if env missing) ---
-          $app  = if (![string]::IsNullOrWhiteSpace($env:APP_NAME)) { $env:APP_NAME } else { "spring-petclinic" }
-          $stag = if (![string]::IsNullOrWhiteSpace($env:STAGING_IMAGE_TAG)) { $env:STAGING_IMAGE_TAG } else { "staging" }
-          $prev = if (![string]::IsNullOrWhiteSpace($env:PREV_IMAGE_TAG)) { $env:PREV_IMAGE_TAG } else { "staging-prev" }
-          $compose = if (![string]::IsNullOrWhiteSpace($env:DOCKER_COMPOSE_FILE)) { $env:DOCKER_COMPOSE_FILE } else { "docker-compose.staging.yml" }
-
-          # --- Health wait ---
-          $max = [int]($env:HEALTH_MAX_WAIT_SEC ?? 150)
-          $int = [int]($env:HEALTH_INTERVAL_SEC ?? 5)
+        
+          # --- Inputs with PS5-safe fallbacks ---
+          $app   = if ($env:APP_NAME            -and $env:APP_NAME.Trim())            { $env:APP_NAME }            else { "spring-petclinic" }
+          $stag  = if ($env:STAGING_IMAGE_TAG   -and $env:STAGING_IMAGE_TAG.Trim())   { $env:STAGING_IMAGE_TAG }   else { "staging" }
+          $prev  = if ($env:PREV_IMAGE_TAG      -and $env:PREV_IMAGE_TAG.Trim())      { $env:PREV_IMAGE_TAG }      else { "staging-prev" }
+          $compose = if ($env:DOCKER_COMPOSE_FILE -and $env:DOCKER_COMPOSE_FILE.Trim()){ $env:DOCKER_COMPOSE_FILE } else { "docker-compose.staging.yml" }
+        
+          # PS5-safe numeric defaults
+          if ($env:HEALTH_MAX_WAIT_SEC -and $env:HEALTH_MAX_WAIT_SEC -match '^\d+$') { $max = [int]$env:HEALTH_MAX_WAIT_SEC } else { $max = 180 }
+          if ($env:HEALTH_INTERVAL_SEC -and $env:HEALTH_INTERVAL_SEC -match '^\d+$') { $int = [int]$env:HEALTH_INTERVAL_SEC } else { $int = 5 }
           $url = $env:HEALTH_URL
           $ok = $false
-
+        
           Write-Host "Waiting up to $max sec for health at $url ..."
           for ($t=0; $t -lt $max; $t += $int) {
             try {
@@ -177,12 +177,11 @@ pipeline {
             }
             Start-Sleep -Seconds $int
           }
-
+        
           if (-not $ok) {
             Write-Warning "Health check FAILED. Capturing diagnostics..."
             try {
               docker compose -f $compose ps
-              # print app logs if compose service is called 'app'
               $appName = (docker compose -f $compose ps --format json | ConvertFrom-Json | Where-Object { $_.Service -eq 'app' } | Select-Object -First 1 -ExpandProperty Name)
               if ($appName) {
                 Write-Host "`n==== docker logs $appName (last 200) ===="
@@ -190,21 +189,23 @@ pipeline {
                 Write-Host "==== end logs ====`n"
               }
             } catch { }
-
-            # --- SAFE ROLLBACK (only if previous image actually exists) ---
-            $prevImage = "$app:$prev"
+        
+            # --- SAFE ROLLBACK (only if previous image exists) ---
+            $prevImage = "${app}:${prev}"
+            $stagImage = "${app}:${stag}"
             $hasPrev = (docker images -q $prevImage)
             if ($hasPrev) {
               Write-Host "Rolling back to previous image $prevImage ..."
-              docker image tag $prevImage "$app:$stag"
+              docker image tag $prevImage $stagImage
               docker compose -f $compose up -d --remove-orphans --force-recreate
             } else {
               Write-Warning "No previous image to roll back to ($prevImage not found). Leaving current image in place."
             }
-
+        
             throw "Deploy failed health gate; rollback attempted if previous image existed."
           }
         ''')
+
 
       }
       post {
