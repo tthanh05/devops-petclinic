@@ -24,7 +24,7 @@ docker rm -f petclinic-db 2>$null
 docker rm -f petclinic-app 2>$null
 
 # (Optional, safer if you didn’t keep container_name)
-# docker compose -f $composePath down --remove-orphans 2>$null
+docker compose -f $composePath down --remove-orphans
 
 # 3) Bring the stack up
 docker compose -f $composePath up -d
