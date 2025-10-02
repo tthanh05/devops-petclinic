@@ -1,11 +1,11 @@
 # octopus/docker-compose.prod.yml
-# Octopus substitutes ImageTag and ServerPort OR our Deploy.ps1 will force them.
+# Octopus will substitute #{ImageTag} and #{ServerPort}. Our Deploy.ps1 also forces them at runtime.
 
 services:
   db:
     image: mysql:8.0
     volumes:
-      - octopus_mysql-data-staging:/var/lib/mysql
+      - octopus_mysql-data:/var/lib/mysql
     environment:
       MYSQL_ROOT_PASSWORD: "petclinic"
       MYSQL_DATABASE: "petclinic"
@@ -22,16 +22,15 @@ services:
       db:
         condition: service_healthy
     environment:
-      # Spring Boot reads uppercase underscore envs:
       SPRING_PROFILES_ACTIVE: "mysql"
       SPRING_DATASOURCE_URL: "jdbc:mysql://db:3306/petclinic?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC"
       SPRING_DATASOURCE_USERNAME: "root"
       SPRING_DATASOURCE_PASSWORD: "petclinic"
-      SPRING_SQL_INIT_MODE: "always"   # ensure schema/data init when profile=mysql
-      SERVER_PORT: "8080"              # container internal port
+      SPRING_SQL_INIT_MODE: "always"
+      SERVER_PORT: "8080"           # container port
     ports:
-      - "#{ServerPort}:8080"           # host:container (Production should be 8086)
+      - "#{ServerPort}:8080"        # host:container (Production = 8086:8080)
     restart: unless-stopped
 
 volumes:
-  octopus_mysql-data-staging:
+  octopus_mysql-data:
