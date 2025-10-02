@@ -25,7 +25,11 @@ docker --version
 docker compose version
 
 # --- Deploy ---
-docker compose -f $composePath up -d --remove-orphans
+# Clean up any previous stack (keeps the named volume; removes old containers)
+docker compose -f $composePath down --remove-orphans
+
+# now bring it up
+docker compose -f $composePath up -d
 
 # --- Health check (same URL your Jenkins gate uses, or service URL on the host) ---
 $max = 150; $interval = 5; $ok = $false
