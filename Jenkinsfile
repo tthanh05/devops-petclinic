@@ -119,7 +119,7 @@ pipeline {
       }
     }
 
-    // ================= STAGING: Compose + Health gate + Rollback =================
+    // Deploy stage: Compose + Health gate + Rollback
     stage('Deploy: Staging (Compose 8085 + Health + Rollback)') {
       steps {
         bat 'docker --version'
