@@ -1,8 +1,9 @@
 # octopus/Deploy.ps1
+# Runs on the Windows target (Tentacle). It deploys/refreshes the compose stack cleanly.
 
 $ErrorActionPreference = "Stop"
 
-# 1) Read variables provided by Octopus/Jenkins
+# 1) Variables from Octopus
 $tag  = $OctopusParameters['ImageTag']
 $port = $OctopusParameters['ServerPort']
 
@@ -10,48 +11,44 @@ Write-Host "== Petclinic Production Deploy via Octopus =="
 Write-Host "ImageTag   : $tag"
 Write-Host "ServerPort : $port"
 
-if ([string]::IsNullOrWhiteSpace($tag)) { throw "ImageTag is empty." }
+if ([string]::IsNullOrWhiteSpace($tag)) {
+  throw "ImageTag is empty. Ensure 'Substitute Variables in Files' includes octopus\docker-compose.prod.yml and that Jenkins passed --variable ImageTag=<value>."
+}
 
-# 2) Locate the compose file (we packed it under octopus/)
+# 2) Locate compose file (we ship it in the octopus/ folder)
 $composePath = Join-Path $PSScriptRoot 'docker-compose.prod.yml'
-if (-not (Test-Path $composePath)) { $composePath = 'docker-compose.prod.yml' }
+if (-not (Test-Path $composePath)) { $composePath = 'octopus\docker-compose.prod.yml' }
 
-Write-Host "Using: $composePath"
+Write-Host "Using compose file: $composePath"
 
-# --- CLEANUP (your question) ---
-# If you kept fixed container_name values
-docker rm -f petclinic-db 2>$null
-docker rm -f petclinic-app 2>$null
-
-# (Optional, safer if you didn’t keep container_name)
+# 3) Clean slate to avoid "name already in use" conflicts
 docker compose -f $composePath down --remove-orphans
 
-# 3) Bring the stack up
+# 4) Bring the stack up
 docker compose -f $composePath up -d
 
-# 4) Simple health gate (optional)
+# 5) Simple health gate against the running app
 $healthUrl = "http://localhost:$port/actuator/health"
 $max = 150; $step = 5; $ok = $false
+Write-Host "Waiting up to $max sec for PROD health at $healthUrl ..."
 for ($t=0; $t -lt $max; $t += $step) {
   try {
     $r = Invoke-WebRequest -Uri $healthUrl -UseBasicParsing -TimeoutSec 5
-    if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 300) { Write-Host "Health OK"; $ok = $true; break }
+    if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 300) {
+      Write-Host "PROD Health OK (HTTP $($r.StatusCode))"
+      $ok = $true; break
+    }
   } catch { Start-Sleep -Seconds $step; continue }
   Start-Sleep -Seconds $step
 }
-if (-not $ok) { 
-Write-Host "`n=== DIAGNOSTICS (on health failure) ==="
-docker compose -f $composePath ps | Write-Host
 
-Write-Host "`n-- Docker ps --"
-docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}" | Write-Host
+if (-not $ok) {
+  Write-Warning "Health check failed. Capturing diagnostics..."
 
-Write-Host "`n-- app logs (last 200) --"
-$AppName = if (Get-Content $composePath | Select-String -Quiet 'container_name:\s*petclinic-app') { 'petclinic-app' } else { (docker compose -f $composePath ps -q app | ForEach-Object { docker ps --filter "id=$_ " --format "{{.Names}}"}) }
-if ($AppName) { docker logs --tail 200 $AppName 2>$null | Write-Host } else { Write-Host "No app container found." }
+  try {
+    docker compose -f $composePath ps
+    docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"
+  } catch {}
 
-Write-Host "`n-- db logs (last 100) --"
-$DbName = if (Get-Content $composePath | Select-String -Quiet 'container_name:\s*petclinic-db') { 'petclinic-db' } else { (docker compose -f $composePath ps -q db  | ForEach-Object { docker ps --filter "id=$_ " --format "{{.Names}}"}) }
-if ($DbName) { docker logs --tail 100 $DbName 2>$null | Write-Host } else { Write-Host "No db container found." }
-
-throw "Octopus: PROD health check failed" }
+  throw "Octopus: PROD health check failed"
+}
