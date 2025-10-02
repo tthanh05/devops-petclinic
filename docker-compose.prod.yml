@@ -8,7 +8,6 @@ services:
       MYSQL_ROOT_PASSWORD: rootprod
       MYSQL_USER: pet
       MYSQL_PASSWORD: petprod
-    # DB is internal-only in prod compose (no host port publish)
     volumes:
       - petclinic_mysql_data_prod:/var/lib/mysql
     healthcheck:
@@ -18,7 +17,8 @@ services:
       retries: 30
 
   app:
-    image: spring-petclinic:prod             # moving tag advanced by the Release stage
+    # Octopus replaces #{ImageTag} with the release variable we pass from Jenkins
+    image: spring-petclinic:#{ImageTag}
     container_name: petclinic-app-prod
     depends_on:
       db:
@@ -30,10 +30,10 @@ services:
       SPRING_DATASOURCE_PASSWORD: petprod
       SPRING_JPA_HIBERNATE_DDL_AUTO: update
       MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,info,prometheus
-      SERVER_PORT: "8086"
+      # Octopus variable for port (we also pass this from Jenkins)
+      SERVER_PORT: "#{ServerPort}"
     ports:
-      - "8086:8086"
-    # (optional) you can add an app healthcheck if your base image has curl/wget installed
+      - "#{ServerPort}:#{ServerPort}"
 
 volumes:
   petclinic_mysql_data_prod:
