@@ -1,53 +1,41 @@
-# == Petclinic Production Deploy via Octopus ==
-param()
+# octopus/Deploy.ps1
+$ErrorActionPreference = "Stop"
 
-$ErrorActionPreference = 'Stop'
-
-# Values injected by Octopus variable substitution
-$ImageTag   = "#{ImageTag}"
-$ServerPort = "#{ServerPort}"
-
-# Resolve compose file relative to this script
-$compose = Join-Path $PSScriptRoot 'docker-compose.prod.yml'
-
-if (-not (Test-Path $compose)) {
-  throw "Compose file not found at: $compose"
-}
+# --- Read vars that Jenkins passed to Octopus ---
+$tag  = $OctopusParameters['ImageTag']
+$port = $OctopusParameters['ServerPort']
 
 Write-Host "== Petclinic Production Deploy via Octopus =="
-Write-Host "ImageTag:   $ImageTag"
-Write-Host "ServerPort: $ServerPort"
+Write-Host "ImageTag   : $tag"
+Write-Host "ServerPort : $port"
 
-docker version
+if ([string]::IsNullOrWhiteSpace($tag)) {
+  throw "ImageTag is empty. Ensure 'Substitute Variables in Files' is enabled for octopus\docker-compose.prod.yml and the deploy used --variable ImageTag=<value>."
+}
+
+# Compose file lives in the same 'octopus' folder as this script
+$composePath = Join-Path $PSScriptRoot 'docker-compose.prod.yml'
+if (-not (Test-Path $composePath)) { $composePath = 'docker-compose.prod.yml' }  # fallback if layout differs
+
+Write-Host "Using compose file: $composePath"
+Get-Content $composePath -TotalCount 30 | ForEach-Object { Write-Host $_ }
+
+# --- Sanity info (optional) ---
+docker --version
 docker compose version
 
-# Deploy/update the stack
-Write-Host "Bringing up stack from $compose ..."
-docker compose -f "$compose" up -d --remove-orphans
+# --- Deploy ---
+docker compose -f $composePath up -d --remove-orphans
 
-# Health gate against the app actuator on the host-exposed port
-$healthUrl = "http://localhost:$ServerPort/actuator/health"
-$max = 150      # seconds
-$interval = 5   # seconds
-$ok = $false
-
-Write-Host "Waiting up to $max sec for health at $healthUrl ..."
+# --- Health check (same URL your Jenkins gate uses, or service URL on the host) ---
+$max = 150; $interval = 5; $ok = $false
+$health = "http://localhost:$port/actuator/health"
+Write-Host "Waiting up to $max sec for health at $health ..."
 for ($t = 0; $t -lt $max; $t += $interval) {
   try {
-    $resp = Invoke-WebRequest -Uri $healthUrl -UseBasicParsing -TimeoutSec 5
-    if ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 300) {
-      Write-Host "Health OK (HTTP $($resp.StatusCode))"
-      $ok = $true
-      break
-    }
-  } catch {
-    # keep waiting
-  }
+    $resp = Invoke-WebRequest -Uri $health -UseBasicParsing -TimeoutSec 5
+    if ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 300) { Write-Host "PROD health OK"; $ok = $true; break }
+  } catch { Start-Sleep -Seconds $interval; continue }
   Start-Sleep -Seconds $interval
 }
-
-if (-not $ok) {
-  throw "Octopus: PROD health check failed"
-}
-
-Write-Host "== Deployment complete =="
+if (-not $ok) { throw "Octopus: PROD health check failed" }
