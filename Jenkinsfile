@@ -31,13 +31,6 @@ pipeline {
   }
 
   stages {
-
-    stage('Workspace clean') {
-      steps {
-        deleteDir()    // wipe current workspace on this node
-      }
-    }
-
     stage('Checkout') {
       steps { checkout scm }
     }
@@ -234,6 +227,12 @@ pipeline {
         }
       }
     }
+    
+    stage('Workspace clean') {
+      when { changeset pattern: 'appspec.yml|scripts/**', comparator: 'REGEXP' }
+      steps { deleteDir() }
+    }
+
 
     // ==================== PRODUCTION RELEASE (AWS CodeDeploy) ====================
     stage('Release: Production (AWS CodeDeploy)') {
