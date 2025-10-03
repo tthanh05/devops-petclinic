@@ -16,6 +16,8 @@ pipeline {
     DC_CACHE = '.dc'
     AWS_DEFAULT_REGION = 'ap-southeast-2'
     S3_BUCKET          = 'petclinic-codedeploy-tthanh-ap-southeast-2'
+    COMPOSE_PROJECT_NAME = 'petclinic-ci'
+    STAGING_PORT         = '8085'
 
     // --- Deploy/Staging config ---
     DOCKER_COMPOSE_FILE = 'docker-compose.staging.yml'
@@ -176,32 +178,47 @@ pipeline {
       steps {
         bat 'docker --version'
         bat 'docker compose version'
-
+    
+        // Preserve previous staging image for rollback (if it exists)
         bat """
-          REM --- Preserve previous staging image for rollback (if it exists)
           for /f "tokens=*" %%i in ('docker images -q %APP_NAME%:%STAGING_IMAGE_TAG%') do (
             docker image tag %APP_NAME%:%STAGING_IMAGE_TAG% %APP_NAME%:%PREV_IMAGE_TAG%
           )
-
-          REM --- Build new versioned image and retag to 'staging'
+    
           docker build -t %APP_NAME%:%VERSION% -f Dockerfile .
           docker image tag %APP_NAME%:%VERSION% %APP_NAME%:%STAGING_IMAGE_TAG%
         """
-
-        // Deploy (or update) via compose
-        bat "docker compose -f %DOCKER_COMPOSE_FILE% up -d --remove-orphans"
-
+    
+        // --- Pre-free 8085 in case an old/parallel stack is holding it ---
+        powershell('''
+          $port = [int]$env:STAGING_PORT
+          $ids  = (docker ps --filter "publish=$port" -q) 2>$null
+          if ($ids) {
+            Write-Host "Port $port is in use; stopping containers: $ids"
+            foreach ($id in $ids) {
+              try { docker stop $id | Out-Null } catch {}
+              try { docker rm   $id | Out-Null } catch {}
+            }
+          } else {
+            Write-Host "Port $port is free."
+          }
+        ''')
+    
+        // Up/refresh the staging stack with a FIXED project name
+        bat "docker compose -p %COMPOSE_PROJECT_NAME% -f %DOCKER_COMPOSE_FILE% up -d --remove-orphans"
+    
         // Health gate against host-exposed 8085
         powershell('''
           $max = [int]$env:HEALTH_MAX_WAIT_SEC
           $interval = [int]$env:HEALTH_INTERVAL_SEC
+          $url = $env:HEALTH_URL
           $ok = $false
-          Write-Host "Waiting up to $max sec for health at $($env:HEALTH_URL) ..."
+          Write-Host "Waiting up to $max sec for health at $url ..."
           for ($t = 0; $t -lt $max; $t += $interval) {
             try {
-              $resp = Invoke-WebRequest -Uri $env:HEALTH_URL -UseBasicParsing -TimeoutSec 5
+              $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 5
               if ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 300) {
-                Write-Host "Health OK (HTTP $($resp.StatusCode))"
+                "Health OK (HTTP $($resp.StatusCode))" | Tee-Object -FilePath health-check.log -Append
                 $ok = $true; break
               }
             } catch {
@@ -210,63 +227,54 @@ pipeline {
             }
             Start-Sleep -Seconds $interval
           }
+    
           if (-not $ok) {
-            Write-Host "Health check FAILED. Rolling back to previous image tag..."
-            docker image tag $env:APP_NAME:$env:PREV_IMAGE_TAG $env:APP_NAME:$env:STAGING_IMAGE_TAG
-            docker compose -f $env:DOCKER_COMPOSE_FILE up -d --remove-orphans
-            throw "Deploy failed health gate; rolled back to previous image."
+            Write-Warning "Health check FAILED. Attempting rollback to previous image (if present)..."
+            $prevImg = "$($env:APP_NAME):$($env:PREV_IMAGE_TAG)"
+            $stagImg = "$($env:APP_NAME):$($env:STAGING_IMAGE_TAG)"
+            $hasPrev = (docker images -q $prevImg)
+            if ($hasPrev) {
+              docker image tag $prevImg $stagImg
+              docker compose -p $env:COMPOSE_PROJECT_NAME -f $env:DOCKER_COMPOSE_FILE up -d --remove-orphans
+            } else {
+              Write-Warning "No previous image found ($prevImg). Skipping rollback."
+            }
+            throw "Deploy failed health gate."
           }
-          "Health OK" | Tee-Object -FilePath health-check.log -Append
         ''')
       }
       post {
         success {
           echo "Staging healthy at ${HEALTH_URL}. Image: ${APP_NAME}:${VERSION} (tag=${STAGING_IMAGE_TAG})."
-          archiveArtifacts artifacts: "${DOCKER_COMPOSE_FILE}", fingerprint: true, allowEmptyArchive: false
+          archiveArtifacts artifacts: "${DOCKER_COMPOSE_FILE}, health-check.log", fingerprint: true, allowEmptyArchive: false
         }
         failure {
-          echo "Deploy failed; rollback attempted via tag ${PREV_IMAGE_TAG}."
+          echo "Deploy failed; rollback attempted if previous image existed."
         }
         always {
-        // One PowerShell block writes all evidence files safely to the workspace
-        powershell('''
-          Set-StrictMode -Version Latest
+          // Evidence collection (project-aware, no fixed names)
+          powershell('''
+            $proj = $env:COMPOSE_PROJECT_NAME
+            $compose = $env:DOCKER_COMPOSE_FILE
     
-          # 1) docker ps snapshot
-          try {
-            docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}" `
-              | Out-File -FilePath "docker-ps.txt" -Encoding utf8
-          } catch {
-            "docker ps failed: $($_.Exception.Message)" | Out-File -FilePath "docker-ps.txt" -Encoding utf8
-          }
+            try { docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}" | Out-File -FilePath "docker-ps.txt" -Encoding utf8 } catch {}
+            try { docker compose -p $proj -f $compose ps | Out-File -FilePath "compose-ps.txt" -Encoding utf8 } catch {}
     
-          # 2) docker compose ps snapshot (using env var path)
-          try {
-            docker compose -f "$env:DOCKER_COMPOSE_FILE" ps `
-              | Out-File -FilePath "compose-ps.txt" -Encoding utf8
-          } catch {
-            "docker compose ps failed: $($_.Exception.Message)" | Out-File -FilePath "compose-ps.txt" -Encoding utf8
-          }
-    
-          # 3) last 15 minutes of logs for known service names (create file even if missing)
-          $names = @("petclinic-app","petclinic-db")
-          foreach ($n in $names) {
             try {
-              docker logs --since=15m $n `
-                | Out-File -FilePath ("deploy-logs-" + $n + ".txt") -Encoding utf8
-            } catch {
-              ("no logs available for " + $n + ": " + $($_.Exception.Message)) `
-                | Out-File -FilePath ("deploy-logs-" + $n + ".txt") -Encoding utf8
-            }
-          }
-        ''')
-    
-        // Archive whatever was produced (will not fail if any are empty/missing)
-        archiveArtifacts artifacts: 'docker-ps.txt, compose-ps.txt, deploy-logs-*.txt, health-check.log',
-                         allowEmptyArchive: true
+              $ids = docker compose -p $proj -f $compose ps -q
+              if ($ids) {
+                foreach ($i in $ids) {
+                  $name = (docker inspect --format "{{.Name}}" $i).TrimStart("/")
+                  docker logs --since=15m $i | Out-File -FilePath ("deploy-logs-" + $name + ".txt") -Encoding utf8
+                }
+              }
+            } catch {}
+          ''')
+          archiveArtifacts artifacts: 'docker-ps.txt, compose-ps.txt, deploy-logs-*.txt', allowEmptyArchive: true
+        }
       }
     }
-    }
+
 
     stage('Release: Production (AWS CodeDeploy)') {
       when { branch 'main' }
