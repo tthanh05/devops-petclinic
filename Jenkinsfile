@@ -202,11 +202,11 @@ pipeline {
       }
       post {
         success {
-          echo "✅ Staging healthy at ${HEALTH_URL}. Image: ${APP_NAME}:${VERSION} (tag=${STAGING_IMAGE_TAG})."
+          echo "Staging healthy at ${HEALTH_URL}. Image: ${APP_NAME}:${VERSION} (tag=${STAGING_IMAGE_TAG})."
           archiveArtifacts artifacts: "${DOCKER_COMPOSE_FILE}, health-check.log", fingerprint: true, allowEmptyArchive: false
         }
         failure {
-          echo "⛔ Deploy failed; rollback attempted if previous image existed."
+          echo "Deploy failed; rollback attempted if previous image existed."
         }
         always {
           powershell('''
