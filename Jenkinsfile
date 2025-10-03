@@ -233,51 +233,60 @@ pipeline {
     stage('Release: Production (AWS CodeDeploy)') {
       when { branch 'main' }
       steps {
+        // If you use the AWS Steps plugin, keep this. Otherwise remove withAWS and keep the code inside.
         withAWS(credentials: 'aws_prod', region: env.AWS_DEFAULT_REGION) {
+    
+          // Build the exact versioned image locally (optional for CodeDeploy itself)
           bat 'docker build -t spring-petclinic:%VERSION% .'
-
+    
+          // Package the revision CodeDeploy will pull
           bat '''
             if not exist codedeploy mkdir codedeploy
             > release.env echo IMAGE_TAG=%VERSION%
             >> release.env echo SERVER_PORT=8086
+            powershell -NoProfile -Command "Compress-Archive -Path appspec.yml,scripts,release.env,docker-compose.prod.yml -DestinationPath codedeploy\\petclinic-%VERSION%.zip -Force"
           '''
-
-          bat 'powershell -NoProfile -Command "Compress-Archive -Path appspec.yml,scripts,release.env,docker-compose.prod.yml -DestinationPath codedeploy\\petclinic-%VERSION%.zip -Force"'
-
-          bat 'aws s3 cp codedeploy\\petclinic-%VERSION%.zip s3://%S3_BUCKET%/revisions/petclinic-%VERSION%.zip'
-
-          bat '''
-            for /f %%i in ('aws deploy create-deployment ^
-              --application-name PetclinicApp ^
-              --deployment-group-name Production ^
-              --s3-location bucket=%S3_BUCKET%,key=revisions/petclinic-%VERSION%.zip,bundleType=zip ^
-              --deployment-config-name CodeDeployDefault.AllAtOnce ^
-              --auto-rollback-configuration enabled=true,events=DEPLOYMENT_FAILURE ^
-              --query deploymentId --output text') do set DEPLOY_ID=%%i
-            echo DeploymentId=%DEPLOY_ID%
-          '''
-
-          bat '''
-            setlocal enabledelayedexpansion
-            set STATUS=Created
-            for /l %%t in (1,1,120) do (
-              for /f %%s in ('aws deploy get-deployment --deployment-id %DEPLOY_ID% --query deploymentInfo.status --output text') do set STATUS=%%s
-              echo Status: !STATUS!
-              if /I "!STATUS!"=="Succeeded" goto :good
-              if /I "!STATUS!"=="Failed"    goto :bad
-              ping -n 6 127.0.0.1 >nul
-            )
-            :bad
-            exit /b 1
-            :good
-          '''
+    
+          // Upload to S3
+          bat 'aws s3 cp codedeploy\\petclinic-%VERSION%.zip s3://%S3_BUCKET%/revisions/petclinic-%VERSION%.zip --region %AWS_DEFAULT_REGION%'
+    
+          // ---- Create deployment (PowerShell to avoid quoting issues) ----
+          powershell("""
+            \$depId = aws deploy create-deployment `
+              --application-name PetclinicApp `
+              --deployment-group-name Production `
+              --s3-location bucket=$env:S3_BUCKET,key=revisions/petclinic-$env:VERSION.zip,bundleType=zip `
+              --deployment-config-name CodeDeployDefault.AllAtOnce `
+              --auto-rollback-configuration enabled=true,events=DEPLOYMENT_FAILURE `
+              --region $env:AWS_DEFAULT_REGION `
+              --query deploymentId --output text
+            if (-not \$depId -or \$depId -eq 'None') {
+              Write-Error 'Failed to create deployment (no deploymentId returned).'
+            }
+            Set-Content -Path dep_id.txt -Value \$depId
+            Write-Host "DeploymentId=\$depId"
+          """)
+    
+          // ---- Poll deployment status (PowerShell) ----
+          powershell("""
+            \$id = Get-Content dep_id.txt
+            for (\$i=0; \$i -lt 120; \$i++) {
+              \$st = aws deploy get-deployment --deployment-id \$id --region $env:AWS_DEFAULT_REGION --query deploymentInfo.status --output text
+              Write-Host "Status: \$st"
+              if (\$st -eq 'Succeeded') { exit 0 }
+              if (\$st -eq 'Failed')    { exit 1 }
+              Start-Sleep -Seconds 6
+            }
+            Write-Error 'Timed out waiting for CodeDeploy deployment to finish.'
+          """)
         }
       }
       post {
         success { echo "Production released via CodeDeploy. Version=${VERSION} on port 8086." }
-        failure { echo "Release failed. Check CodeDeploy console and agent logs on the prod host." }
+        failure { echo "Release failed. Check CodeDeploy console and the agent logs on the prod host." }
       }
     }
+
   }
 
   post {
