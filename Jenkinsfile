@@ -231,13 +231,15 @@ pipeline {
     stage('Workspace clean') {
       when {
         anyOf {
-          changeset comparator: 'REGEXP', pattern: '^appspec\\.yml$'
-          changeset comparator: 'REGEXP', pattern: '^scripts/.*'
-          changeset comparator: 'REGEXP', pattern: '^docker-compose\\.prod\\.yml$'
-          changeset comparator: 'REGEXP', pattern: '^release\\.env$'
+          changeset glob: 'appspec.yml'
+          changeset glob: 'scripts/**'
         }
       }
-      steps { deleteDir() }
+      steps {
+        deleteDir()
+        // if you want a fully fresh clone:
+        checkout scm
+      }
     }
 
 
