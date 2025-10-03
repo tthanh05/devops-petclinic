@@ -23,5 +23,5 @@ services:
       spring.datasource.password: "petclinic"
       SERVER_PORT: "8085"
     ports:
-      - "8085:8085"
+      - "8100:8085"
     restart: unless-stopped
