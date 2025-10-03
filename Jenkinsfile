@@ -250,9 +250,9 @@ pipeline {
           // Upload to S3
           bat 'aws s3 cp codedeploy\\petclinic-%VERSION%.zip s3://%S3_BUCKET%/revisions/petclinic-%VERSION%.zip --region %AWS_DEFAULT_REGION%'
     
-          // ---- Create deployment (PowerShell to avoid quoting issues) ----
-          powershell("""
-            \$depId = aws deploy create-deployment `
+          // ---- Create deployment ----
+          powershell('''
+            $depId = aws deploy create-deployment `
               --application-name PetclinicApp `
               --deployment-group-name Production `
               --s3-location bucket=$env:S3_BUCKET,key=revisions/petclinic-$env:VERSION.zip,bundleType=zip `
@@ -260,25 +260,29 @@ pipeline {
               --auto-rollback-configuration enabled=true,events=DEPLOYMENT_FAILURE `
               --region $env:AWS_DEFAULT_REGION `
               --query deploymentId --output text
-            if (-not \$depId -or \$depId -eq 'None') {
+          
+            if (-not $depId -or $depId -eq 'None') {
               Write-Error 'Failed to create deployment (no deploymentId returned).'
             }
-            Set-Content -Path dep_id.txt -Value \$depId
-            Write-Host "DeploymentId=\$depId"
-          """)
+            Set-Content -Path dep_id.txt -Value $depId
+            Write-Host "DeploymentId=$depId"
+          ''')
     
-          // ---- Poll deployment status (PowerShell) ----
-          powershell("""
-            \$id = Get-Content dep_id.txt
-            for (\$i=0; \$i -lt 120; \$i++) {
-              \$st = aws deploy get-deployment --deployment-id \$id --region $env:AWS_DEFAULT_REGION --query deploymentInfo.status --output text
-              Write-Host "Status: \$st"
-              if (\$st -eq 'Succeeded') { exit 0 }
-              if (\$st -eq 'Failed')    { exit 1 }
+          // ---- Poll deployment status ----
+          powershell('''
+            $id = Get-Content dep_id.txt
+            for ($i=0; $i -lt 120; $i++) {
+              $st = aws deploy get-deployment `
+                --deployment-id $id `
+                --region $env:AWS_DEFAULT_REGION `
+                --query deploymentInfo.status --output text
+              Write-Host "Status: $st"
+              if ($st -eq 'Succeeded') { exit 0 }
+              if ($st -eq 'Failed')    { exit 1 }
               Start-Sleep -Seconds 6
             }
             Write-Error 'Timed out waiting for CodeDeploy deployment to finish.'
-          """)
+          ''')
         }
       }
       post {
