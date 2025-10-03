@@ -1,31 +1,32 @@
-#!/bin/bash
-# no -e (it causes exit on harmless tests); keep tracing & -u/-o pipefail
-set -xuo pipefail
+#!/usr/bin/env bash
+# scripts/before_install.sh
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+# log everything to /var/log/codedeploy-hooks.log and to the CodeDeploy console
+exec > >(tee -a /var/log/codedeploy-hooks.log) 2>&1
+echo "=== [BeforeInstall] $(date -Is) starting ==="
 
 APP_DIR="/opt/petclinic"
-mkdir -p "$APP_DIR" || true
+mkdir -p "$APP_DIR"
 
-# Ensure unzip exists (best-effort; never fail the hook)
+# Ensure unzip exists (quietly); some AL2 images don’t have it
 if ! command -v unzip >/dev/null 2>&1; then
-  if command -v dnf >/dev/null 2>&1; then
-    sudo dnf -y install unzip || true
-  elif command -v yum >/dev/null 2>&1; then
-    sudo yum -y install unzip || true
-  elif command -v apt-get >/dev/null 2>&1; then
-    sudo apt-get update -y || true
-    sudo apt-get install -y unzip || true
+  echo "[BeforeInstall] installing unzip..."
+  (yum -y install unzip || dnf -y install unzip || true)
+fi
+
+# Normalize CRLF just in case the archive was zipped on Windows
+if [ -d /opt/codedeploy-agent/deployment-root ]; then
+  DEPLOY_DIR_FILE="/opt/codedeploy-agent/deployment-root/ongoing-deployment"
+  if [ -r "$DEPLOY_DIR_FILE" ]; then
+    DEPLOY_DIR="$(cat "$DEPLOY_DIR_FILE")"
+    if [ -n "${DEPLOY_DIR:-}" ] && [ -d "$DEPLOY_DIR" ]; then
+      echo "[BeforeInstall] normalizing line endings in $DEPLOY_DIR"
+      find "$DEPLOY_DIR" -type f \( -name "*.sh" -o -name "*.yml" -o -name "*.env" \) \
+        -exec sed -i 's/\r$//' {} +
+    fi
   fi
 fi
 
-# Normalize CRLF -> LF inside this deployment's archive (best-effort)
-DEPLOY_FILE="/opt/codedeploy-agent/deployment-root/ongoing-deployment"
-if [[ -f "$DEPLOY_FILE" ]]; then
-  DEPLOY_DIR_NOW="$(cat "$DEPLOY_FILE" 2>/dev/null | tr -d '\n')"
-  if [[ -n "${DEPLOY_DIR_NOW:-}" && -d "$DEPLOY_DIR_NOW/deployment-archive" ]]; then
-    find "$DEPLOY_DIR_NOW/deployment-archive" \
-      -type f \( -name "*.sh" -o -name "*.yml" -o -name "*.yaml" -o -name "*.env" \) \
-      -exec sed -i 's/\r$//' {} + || true
-  fi
-fi
-
-exit 0
+echo "=== [BeforeInstall] $(date -Is) finished OK ==="
