@@ -229,9 +229,17 @@ pipeline {
     }
     
     stage('Workspace clean') {
-      when { changeset pattern: 'appspec.yml|scripts/**', comparator: 'REGEXP' }
+      when {
+        anyOf {
+          changeset comparator: 'REGEXP', pattern: '^appspec\\.yml$'
+          changeset comparator: 'REGEXP', pattern: '^scripts/.*'
+          changeset comparator: 'REGEXP', pattern: '^docker-compose\\.prod\\.yml$'
+          changeset comparator: 'REGEXP', pattern: '^release\\.env$'
+        }
+      }
       steps { deleteDir() }
     }
+
 
 
     // ==================== PRODUCTION RELEASE (AWS CodeDeploy) ====================
