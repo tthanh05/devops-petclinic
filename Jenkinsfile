@@ -40,6 +40,7 @@ pipeline {
         bat '"%JAVA_HOME%\\bin\\java" -version'
         bat "${MVN} spring-javaformat:apply"
         bat "${MVN} -DskipTests -Dcheckstyle.skip=true clean package"
+        stash name: 'petclinic-jar', includes: 'target/spring-petclinic-*.jar'
       }
       post {
         success { archiveArtifacts artifacts: 'target\\*.jar', fingerprint: true }
@@ -240,6 +241,7 @@ pipeline {
       steps {
         deleteDir()
         checkout scm
+        unstash 'petclinic-jar'
         // normalize CRLF -> LF before zipping
         powershell '''
           $files = @(
