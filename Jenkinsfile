@@ -17,17 +17,17 @@ pipeline {
 
     // ----- AWS (Release via CodeDeploy) -----
     AWS_DEFAULT_REGION = 'ap-southeast-2'
-    S3_BUCKET          = 'petclinic-codedeploy-tthanh-ap-southeast-2'   // <== your bucket
+    S3_BUCKET          = 'petclinic-codedeploy-tthanh-ap-southeast-2'   // <- your bucket
 
     // ----- Staging (Compose) -----
-    DOCKER_COMPOSE_FILE = 'docker-compose.staging.yml'
-    COMPOSE_PROJECT_NAME = 'petclinic-ci'   // fixed name prevents duplicate stacks
-    STAGING_IMAGE_TAG   = 'staging'
-    PREV_IMAGE_TAG      = 'staging-prev'
-    STAGING_PORT        = '8085'            // host port for staging
-    HEALTH_URL          = 'http://localhost:8085/actuator/health'
-    HEALTH_MAX_WAIT_SEC = '120'
-    HEALTH_INTERVAL_SEC = '5'
+    DOCKER_COMPOSE_FILE   = 'docker-compose.staging.yml'
+    COMPOSE_PROJECT_NAME  = 'petclinic-ci'   // fixed name prevents duplicate stacks
+    STAGING_IMAGE_TAG     = 'staging'
+    PREV_IMAGE_TAG        = 'staging-prev'
+    STAGING_PORT          = '8085'           // host port for staging
+    HEALTH_URL            = 'http://localhost:8085/actuator/health'
+    HEALTH_MAX_WAIT_SEC   = '120'
+    HEALTH_INTERVAL_SEC   = '5'
   }
 
   stages {
@@ -136,7 +136,7 @@ pipeline {
       }
     }
 
-    // ==================== STAGING DEPLOY (fixed project, port pre-free, health+rollback) ====================
+    // ==================== STAGING DEPLOY ====================
     stage('Deploy: Staging (Docker Compose on 8085 with Health Gate + Rollback)') {
       steps {
         bat 'docker --version'
@@ -154,11 +154,9 @@ pipeline {
         // free port 8085 if anything (any stack) is publishing it
         powershell('''
           $port = [int]$env:STAGING_PORT
-          $pub = docker ps --format "{{.ID}} {{.Names}} {{.Ports}}" 2>$null | Where-Object { $_ -match ":\Q$port\E->" }
-          if ($pub) {
-            Write-Warning "Port $port is in use by:"
-            $pub | ForEach-Object { Write-Host "  $_" }
-            $ids = $pub | ForEach-Object { ($_ -split "\s+")[0] }
+          $ids = (docker ps --filter "publish=$port" -q) 2>$null
+          if ($ids) {
+            Write-Warning "Port $port is in use; stopping containers: $ids"
             foreach ($id in $ids) {
               try { docker stop $id | Out-Null } catch {}
               try { docker rm   $id | Out-Null } catch {}
@@ -236,24 +234,18 @@ pipeline {
       when { branch 'main' }
       steps {
         withAWS(credentials: 'aws_prod', region: env.AWS_DEFAULT_REGION) {
-
-          // Build versioned image locally (push to a registry if you have one)
           bat 'docker build -t spring-petclinic:%VERSION% .'
 
-          // Vars consumed by CodeDeploy hooks
           bat '''
             if not exist codedeploy mkdir codedeploy
             > release.env echo IMAGE_TAG=%VERSION%
             >> release.env echo SERVER_PORT=8086
           '''
 
-          // Package revision
           bat 'powershell -NoProfile -Command "Compress-Archive -Path appspec.yml,scripts,release.env,docker-compose.prod.yml -DestinationPath codedeploy\\petclinic-%VERSION%.zip -Force"'
 
-          // Upload to S3
           bat 'aws s3 cp codedeploy\\petclinic-%VERSION%.zip s3://%S3_BUCKET%/revisions/petclinic-%VERSION%.zip'
 
-          // Trigger CodeDeploy
           bat '''
             for /f %%i in ('aws deploy create-deployment ^
               --application-name PetclinicApp ^
@@ -265,7 +257,6 @@ pipeline {
             echo DeploymentId=%DEPLOY_ID%
           '''
 
-          // Wait for completion
           bat '''
             setlocal enabledelayedexpansion
             set STATUS=Created
