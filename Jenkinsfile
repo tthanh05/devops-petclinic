@@ -24,8 +24,8 @@ pipeline {
     COMPOSE_PROJECT_NAME  = 'petclinic-ci'   // fixed name prevents duplicate stacks
     STAGING_IMAGE_TAG     = 'staging'
     PREV_IMAGE_TAG        = 'staging-prev'
-    STAGING_PORT          = '8085'           // host port for staging
-    HEALTH_URL            = 'http://localhost:8085/actuator/health'
+    STAGING_PORT = '8100'
+    HEALTH_URL   = 'http://localhost:8100/actuator/health'
     HEALTH_MAX_WAIT_SEC   = '120'
     HEALTH_INTERVAL_SEC   = '5'
   }
