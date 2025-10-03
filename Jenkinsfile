@@ -32,16 +32,20 @@ pipeline {
   }
 
   stages {
-    stage('Checkout') {
-      steps { checkout scm }
-    }
+
+    stage('Workspace clean') { 
+      steps { deleteDir(); checkout scm } }
+
+    // stage('Checkout') {
+    //   steps { checkout scm }
+    // }
 
     stage('Build') {
       steps {
         bat '"%JAVA_HOME%\\bin\\java" -version'
         bat "${MVN} spring-javaformat:apply"
         bat "${MVN} -DskipTests -Dcheckstyle.skip=true clean package"
-        stash name: 'petclinic-jar', includes: 'target/spring-petclinic-*.jar'
+        // stash name: 'petclinic-jar', includes: 'target/spring-petclinic-*.jar'
       }
       post {
         success { archiveArtifacts artifacts: 'target\\*.jar', fingerprint: true }
@@ -261,36 +265,6 @@ pipeline {
       }
     }
     
-    stage('Workspace clean for Release') {
-      when {
-        anyOf {
-          changeset comparator: 'GLOB',  pattern: 'appspec.yml'
-          changeset comparator: 'GLOB',  pattern: 'scripts/**'
-          changeset comparator: 'GLOB',  pattern: 'docker-compose.prod.yml'
-          changeset comparator: 'GLOB',  pattern: 'release.env'
-        }
-      }
-      steps {
-        deleteDir()
-        checkout scm
-        unstash 'petclinic-jar'
-        // normalize CRLF -> LF before zipping
-        powershell '''
-          $files = @(
-            'appspec.yml',
-            'docker-compose.prod.yml',
-            'release.env'
-          ) + (Get-ChildItem -Path 'scripts' -Filter '*.sh' -Recurse | ForEach-Object { $_.FullName })
-          foreach ($f in $files) {
-            if (Test-Path $f) { (Get-Content $f) -join "`n" | Set-Content -Path $f -NoNewline -Encoding utf8 }
-          }
-        '''
-      }
-    }
-
-
-
-
     // ==================== PRODUCTION RELEASE (AWS CodeDeploy) ====================
     stage('Release: Production (AWS CodeDeploy)') {
       when { branch 'main' }
