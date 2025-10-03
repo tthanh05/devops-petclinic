@@ -13,7 +13,8 @@ pipeline {
     APP_NAME = 'spring-petclinic'
     GIT_SHA  = "${env.GIT_COMMIT?.take(7) ?: 'local'}"
     VERSION  = "${env.BUILD_NUMBER}-${GIT_SHA}"
-    DC_CACHE = '.dc'
+    // DC_CACHE = '.dc'
+    DC_CACHE = 'C:\\depcheck-cache'
 
     // ----- AWS (Release via CodeDeploy) -----
     AWS_DEFAULT_REGION = 'ap-southeast-2'
@@ -65,17 +66,48 @@ pipeline {
       }
     }
 
+    // stage('Security: Dependency Scan (OWASP)') {
+    //   steps {
+    //     bat """
+    //       ${MVN} -DskipTests=true ^
+    //              org.owasp:dependency-check-maven:check ^
+    //              -DdataDirectory=%DC_CACHE% ^
+    //              -Dformat=ALL ^
+    //              -DfailBuildOnCVSS=7 ^
+    //              -Danalyzers.assembly.enabled=false ^
+    //              -DautoUpdate=true
+    //     """
+    //   }
+    //   post {
+    //     always {
+    //       archiveArtifacts artifacts: '''
+    //         target/dependency-check-report.html,
+    //         target/dependency-check-report.xml,
+    //         target/dependency-check-report.json,
+    //         target/dependency-check-junit.xml
+    //       '''.trim().replaceAll("\\s+"," "), fingerprint: true, allowEmptyArchive: true
+    //       publishHTML(target: [reportDir: 'target', reportFiles: 'dependency-check-report.html', reportName: 'OWASP Dependency-Check'])
+    //       junit testResults: 'target/dependency-check-junit.xml', allowEmptyResults: true
+    //     }
+    //   }
+    // }
+
     stage('Security: Dependency Scan (OWASP)') {
       steps {
-        bat """
-          ${MVN} -DskipTests=true ^
-                 org.owasp:dependency-check-maven:check ^
-                 -DdataDirectory=%DC_CACHE% ^
-                 -Dformat=ALL ^
-                 -DfailBuildOnCVSS=7 ^
-                 -Danalyzers.assembly.enabled=false ^
-                 -DautoUpdate=true
-        """
+        withCredentials([string(credentialsId: 'nvd_api_key', variable: 'NVD_API_KEY')]) {
+          bat """
+            if not exist "%DC_CACHE%" mkdir "%DC_CACHE%"
+    
+            ${MVN} -DskipTests=true ^
+                   org.owasp:dependency-check-maven:check ^
+                   -DdataDirectory=%DC_CACHE% ^
+                   -Dformat=ALL ^
+                   -DfailBuildOnCVSS=7 ^
+                   -Danalyzers.assembly.enabled=false ^
+                   -DautoUpdate=true ^
+                   -Dnvd.api.key=%NVD_API_KEY%
+          """
+        }
       }
       post {
         always {
