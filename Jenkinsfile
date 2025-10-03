@@ -14,22 +14,24 @@ pipeline {
     GIT_SHA  = "${env.GIT_COMMIT?.take(7) ?: 'local'}"
     VERSION  = "${env.BUILD_NUMBER}-${GIT_SHA}"
     DC_CACHE = '.dc'
-    AWS_DEFAULT_REGION = 'ap-southeast-2'
-    S3_BUCKET          = 'petclinic-codedeploy-tthanh-ap-southeast-2'
-    COMPOSE_PROJECT_NAME = 'petclinic-ci'
-    STAGING_PORT         = '8085'
 
-    // --- Deploy/Staging config ---
+    // ----- AWS (Release via CodeDeploy) -----
+    AWS_DEFAULT_REGION = 'ap-southeast-2'
+    S3_BUCKET          = 'petclinic-codedeploy-tthanh-ap-southeast-2'   // <== your bucket
+
+    // ----- Staging (Compose) -----
     DOCKER_COMPOSE_FILE = 'docker-compose.staging.yml'
-    STAGING_IMAGE_TAG   = 'staging'      // moving tag used by compose
-    PREV_IMAGE_TAG      = 'staging-prev' // rollback tag
-    // Switched to 8085 (host + container)
+    COMPOSE_PROJECT_NAME = 'petclinic-ci'   // fixed name prevents duplicate stacks
+    STAGING_IMAGE_TAG   = 'staging'
+    PREV_IMAGE_TAG      = 'staging-prev'
+    STAGING_PORT        = '8085'            // host port for staging
     HEALTH_URL          = 'http://localhost:8085/actuator/health'
     HEALTH_MAX_WAIT_SEC = '120'
     HEALTH_INTERVAL_SEC = '5'
   }
 
   stages {
+
     stage('Checkout') {
       steps { checkout scm }
     }
@@ -41,39 +43,28 @@ pipeline {
         bat "${MVN} -DskipTests -Dcheckstyle.skip=true clean package"
       }
       post {
-        success {
-          archiveArtifacts artifacts: 'target\\*.jar', fingerprint: true
-        }
+        success { archiveArtifacts artifacts: 'target\\*.jar', fingerprint: true }
       }
     }
 
     stage('Test: Unit') {
-      steps {
-        bat "${MVN} -Dcheckstyle.skip=true -DskipITs=true test"
-      }
+      steps { bat "${MVN} -Dcheckstyle.skip=true -DskipITs=true test" }
       post {
         always {
-          junit testResults: 'target/surefire-reports/*.xml',
-                keepLongStdio: true,
-                allowEmptyResults: false
+          junit testResults: 'target/surefire-reports/*.xml', keepLongStdio: true, allowEmptyResults: false
         }
       }
     }
 
     stage('Test: Integration') {
-      steps {
-        bat "${MVN} -Dcheckstyle.skip=true -DskipITs=false -Djacoco.append=true failsafe:integration-test failsafe:verify"
-      }
+      steps { bat "${MVN} -Dcheckstyle.skip=true -DskipITs=false -Djacoco.append=true failsafe:integration-test failsafe:verify" }
       post {
         always {
-          junit testResults: 'target/failsafe-reports/*.xml',
-                keepLongStdio: true,
-                allowEmptyResults: false
+          junit testResults: 'target/failsafe-reports/*.xml', keepLongStdio: true, allowEmptyResults: false
         }
       }
     }
 
-    /* -------------------- SECURITY (SCA) -------------------- */
     stage('Security: Dependency Scan (OWASP)') {
       steps {
         bat """
@@ -93,33 +84,16 @@ pipeline {
             target/dependency-check-report.xml,
             target/dependency-check-report.json,
             target/dependency-check-junit.xml
-          '''.trim().replaceAll("\\s+", " "), fingerprint: true, allowEmptyArchive: true
-
-          publishHTML(target: [
-            reportDir: 'target',
-            reportFiles: 'dependency-check-report.html',
-            reportName: 'OWASP Dependency-Check',
-            keepAll: true,
-            allowMissing: false,
-            alwaysLinkToLastBuild: false
-          ])
-          archiveArtifacts artifacts: 'target/dependency-check-report/**, target/dependency-check-json*', allowEmptyArchive: true
+          '''.trim().replaceAll("\\s+"," "), fingerprint: true, allowEmptyArchive: true
+          publishHTML(target: [reportDir: 'target', reportFiles: 'dependency-check-report.html', reportName: 'OWASP Dependency-Check'])
           junit testResults: 'target/dependency-check-junit.xml', allowEmptyResults: true
-        }
-        failure {
-          echo 'High severity CVEs detected (CVSS >= 7).'
-        }
-        unsuccessful {
-          echo 'Review Dependency-Check results; only suppress genuine false positives.'
         }
       }
     }
 
-    /* -------------------- CODE QUALITY (SonarQube) -------------------- */
     stage('Code Quality: SonarQube') {
       steps {
         bat "${MVN} -Dcheckstyle.skip=true jacoco:report"
-
         withSonarQubeEnv('sonarqube-server') {
           withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
             bat """
@@ -132,29 +106,18 @@ pipeline {
             bat 'type .scannerwork\\report-task.txt'
           }
         }
-        archiveArtifacts artifacts: '.scannerwork/**', fingerprint: false, allowEmptyArchive: true
+        archiveArtifacts artifacts: '.scannerwork/**', allowEmptyArchive: true
       }
     }
 
     stage('Quality Gate') {
-      steps {
-        timeout(time: 10, unit: 'MINUTES') {
-          waitForQualityGate abortPipeline: true
-        }
-      }
+      steps { timeout(time: 10, unit: 'MINUTES') { waitForQualityGate abortPipeline: true } }
     }
 
     stage('Coverage Report') {
       steps {
         bat "${MVN} -Dcheckstyle.skip=true jacoco:report"
-        publishHTML(target: [
-          reportDir: 'target/site/jacoco',
-          reportFiles: 'index.html',
-          reportName: 'JaCoCo Coverage',
-          keepAll: true,
-          allowMissing: false,
-          alwaysLinkToLastBuild: false
-        ])
+        publishHTML(target: [reportDir: 'target/site/jacoco', reportFiles: 'index.html', reportName: 'JaCoCo Coverage'])
       }
     }
 
@@ -173,41 +136,41 @@ pipeline {
       }
     }
 
-    /* ==================== DEPLOY (Infra-as-Code + Rollback) ==================== */
+    // ==================== STAGING DEPLOY (fixed project, port pre-free, health+rollback) ====================
     stage('Deploy: Staging (Docker Compose on 8085 with Health Gate + Rollback)') {
       steps {
         bat 'docker --version'
         bat 'docker compose version'
-    
-        // Preserve previous staging image for rollback (if it exists)
+
+        // keep previous tag for rollback + build new version
         bat """
           for /f "tokens=*" %%i in ('docker images -q %APP_NAME%:%STAGING_IMAGE_TAG%') do (
             docker image tag %APP_NAME%:%STAGING_IMAGE_TAG% %APP_NAME%:%PREV_IMAGE_TAG%
           )
-    
           docker build -t %APP_NAME%:%VERSION% -f Dockerfile .
           docker image tag %APP_NAME%:%VERSION% %APP_NAME%:%STAGING_IMAGE_TAG%
         """
-    
-        // --- Pre-free 8085 in case an old/parallel stack is holding it ---
+
+        // free port 8085 if anything (any stack) is publishing it
         powershell('''
           $port = [int]$env:STAGING_PORT
-          $ids  = (docker ps --filter "publish=$port" -q) 2>$null
-          if ($ids) {
-            Write-Host "Port $port is in use; stopping containers: $ids"
+          $pub = docker ps --format "{{.ID}} {{.Names}} {{.Ports}}" 2>$null | Where-Object { $_ -match ":\Q$port\E->" }
+          if ($pub) {
+            Write-Warning "Port $port is in use by:"
+            $pub | ForEach-Object { Write-Host "  $_" }
+            $ids = $pub | ForEach-Object { ($_ -split "\s+")[0] }
             foreach ($id in $ids) {
               try { docker stop $id | Out-Null } catch {}
               try { docker rm   $id | Out-Null } catch {}
             }
-          } else {
-            Write-Host "Port $port is free."
-          }
+          } else { Write-Host "Port $port appears free." }
         ''')
-    
-        // Up/refresh the staging stack with a FIXED project name
+
+        // ensure THIS stack is down, then up (fixed project name)
+        bat "docker compose -p %COMPOSE_PROJECT_NAME% -f %DOCKER_COMPOSE_FILE% down --remove-orphans"
         bat "docker compose -p %COMPOSE_PROJECT_NAME% -f %DOCKER_COMPOSE_FILE% up -d --remove-orphans"
-    
-        // Health gate against host-exposed 8085
+
+        // health gate
         powershell('''
           $max = [int]$env:HEALTH_MAX_WAIT_SEC
           $interval = [int]$env:HEALTH_INTERVAL_SEC
@@ -221,15 +184,11 @@ pipeline {
                 "Health OK (HTTP $($resp.StatusCode))" | Tee-Object -FilePath health-check.log -Append
                 $ok = $true; break
               }
-            } catch {
-              Start-Sleep -Seconds $interval
-              continue
-            }
+            } catch { Start-Sleep -Seconds $interval; continue }
             Start-Sleep -Seconds $interval
           }
-    
           if (-not $ok) {
-            Write-Warning "Health check FAILED. Attempting rollback to previous image (if present)..."
+            Write-Warning "Health check FAILED. Attempting rollback (if previous image exists)..."
             $prevImg = "$($env:APP_NAME):$($env:PREV_IMAGE_TAG)"
             $stagImg = "$($env:APP_NAME):$($env:STAGING_IMAGE_TAG)"
             $hasPrev = (docker images -q $prevImg)
@@ -237,7 +196,7 @@ pipeline {
               docker image tag $prevImg $stagImg
               docker compose -p $env:COMPOSE_PROJECT_NAME -f $env:DOCKER_COMPOSE_FILE up -d --remove-orphans
             } else {
-              Write-Warning "No previous image found ($prevImg). Skipping rollback."
+              Write-Warning "No previous image found ($prevImg)."
             }
             throw "Deploy failed health gate."
           }
@@ -245,21 +204,18 @@ pipeline {
       }
       post {
         success {
-          echo "Staging healthy at ${HEALTH_URL}. Image: ${APP_NAME}:${VERSION} (tag=${STAGING_IMAGE_TAG})."
+          echo "✅ Staging healthy at ${HEALTH_URL}. Image: ${APP_NAME}:${VERSION} (tag=${STAGING_IMAGE_TAG})."
           archiveArtifacts artifacts: "${DOCKER_COMPOSE_FILE}, health-check.log", fingerprint: true, allowEmptyArchive: false
         }
         failure {
-          echo "Deploy failed; rollback attempted if previous image existed."
+          echo "⛔ Deploy failed; rollback attempted if previous image existed."
         }
         always {
-          // Evidence collection (project-aware, no fixed names)
           powershell('''
             $proj = $env:COMPOSE_PROJECT_NAME
             $compose = $env:DOCKER_COMPOSE_FILE
-    
             try { docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}" | Out-File -FilePath "docker-ps.txt" -Encoding utf8 } catch {}
             try { docker compose -p $proj -f $compose ps | Out-File -FilePath "compose-ps.txt" -Encoding utf8 } catch {}
-    
             try {
               $ids = docker compose -p $proj -f $compose ps -q
               if ($ids) {
@@ -275,29 +231,29 @@ pipeline {
       }
     }
 
-
+    // ==================== PRODUCTION RELEASE (AWS CodeDeploy) ====================
     stage('Release: Production (AWS CodeDeploy)') {
       when { branch 'main' }
       steps {
         withAWS(credentials: 'aws_prod', region: env.AWS_DEFAULT_REGION) {
-    
-          // Build the exact versioned image (local). Push to a registry if you use one.
+
+          // Build versioned image locally (push to a registry if you have one)
           bat 'docker build -t spring-petclinic:%VERSION% .'
-    
-          // Write the vars the CodeDeploy hooks will read
+
+          // Vars consumed by CodeDeploy hooks
           bat '''
             if not exist codedeploy mkdir codedeploy
             > release.env echo IMAGE_TAG=%VERSION%
             >> release.env echo SERVER_PORT=8086
           '''
-    
-          // Zip the revision (appspec + scripts + compose + env)
+
+          // Package revision
           bat 'powershell -NoProfile -Command "Compress-Archive -Path appspec.yml,scripts,release.env,docker-compose.prod.yml -DestinationPath codedeploy\\petclinic-%VERSION%.zip -Force"'
-    
+
           // Upload to S3
           bat 'aws s3 cp codedeploy\\petclinic-%VERSION%.zip s3://%S3_BUCKET%/revisions/petclinic-%VERSION%.zip'
-    
-          // Trigger CodeDeploy and capture deploymentId
+
+          // Trigger CodeDeploy
           bat '''
             for /f %%i in ('aws deploy create-deployment ^
               --application-name PetclinicApp ^
@@ -308,8 +264,8 @@ pipeline {
               --query deploymentId --output text') do set DEPLOY_ID=%%i
             echo DeploymentId=%DEPLOY_ID%
           '''
-    
-          // Poll until Succeeded/Failed (max ~12 min)
+
+          // Wait for completion
           bat '''
             setlocal enabledelayedexpansion
             set STATUS=Created
@@ -327,18 +283,14 @@ pipeline {
         }
       }
       post {
-        success { echo "Production released via CodeDeploy. Version=${VERSION} on port 8086."; }
-        failure { echo "Release failed. Check CodeDeploy console and agent logs on the prod host."; }
+        success { echo "Production released via CodeDeploy. Version=${VERSION} on port 8086." }
+        failure { echo "Release failed. Check CodeDeploy console and agent logs on the prod host." }
       }
     }
-
   }
+
   post {
-    success {
-      echo "Build ${VERSION} passed all gates and deployed to staging on 8085."
-    }
-    failure {
-      echo "Build ${VERSION} failed. If failure is in Tag/Deploy, check credentials/Docker/health gate."
-    }
+    success { echo "Build ${VERSION} passed all gates and deployed to staging; release (if main) via CodeDeploy." }
+    failure { echo "Build ${VERSION} failed. If failure is in Deploy/Release, check Docker/health or AWS setup." }
   }
 }
