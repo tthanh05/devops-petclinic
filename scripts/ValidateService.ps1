@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $proj = "petclinic-prod"
-$port = 8086
+$port = [int]($env:SERVER_PORT ?? 8086)
 $url  = "http://localhost:$port/actuator/health"
 $max  = 180
 $int  = 5
