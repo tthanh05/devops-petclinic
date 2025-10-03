@@ -1,0 +1,18 @@
+version: 0.0
+os: windows
+files:
+  - source: \
+    destination: C:\codedeploy\petclinic
+hooks:
+  BeforeInstall:
+    - location: scripts\BeforeInstall.ps1
+      timeout: 180
+      runas: Administrator
+  ApplicationStart:
+    - location: scripts\ApplicationStart.ps1
+      timeout: 300
+      runas: Administrator
+  ValidateService:
+    - location: scripts\ValidateService.ps1
+      timeout: 300
+      runas: Administrator
