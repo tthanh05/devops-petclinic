@@ -1,34 +1,28 @@
+version: "3.8"
 services:
+  app:
+    image: "spring-petclinic:${IMAGE_TAG}"   # filled by ApplicationStart.ps1
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: "mysql"
+      SPRING_DATASOURCE_URL: "jdbc:mysql://db:3306/petclinic?useUnicode=true&characterEncoding=utf8&useSSL=false&allowPublicKeyRetrieval=true"
+      SPRING_DATASOURCE_USERNAME: "petclinic"
+      SPRING_DATASOURCE_PASSWORD: "petclinic"
+    ports:
+      # Host 8086 -> container 8085  (Tomcat logs show 8085 inside)
+      - "${SERVER_PORT:-8086}:8085"
+
   db:
     image: mysql:8.0
     environment:
-      MYSQL_ROOT_PASSWORD: "petclinic"
-      MYSQL_DATABASE: "petclinic"
-    volumes:
-      - mysql-data-prod:/var/lib/mysql
+      MYSQL_DATABASE: petclinic
+      MYSQL_USER: petclinic
+      MYSQL_PASSWORD: petclinic
+      MYSQL_ROOT_PASSWORD: root
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-ppetclinic"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-    restart: unless-stopped
-
-  app:
-    image: "spring-petclinic:prod-current"   # pinned to exact tag at runtime by ApplicationStart.ps1
-    depends_on:
-      db: { condition: service_healthy }
-    environment:
-      SPRING_PROFILES_ACTIVE: "mysql"
-      SPRING_DATASOURCE_URL: "jdbc:mysql://db:3306/petclinic?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC"
-      SPRING_DATASOURCE_USERNAME: "root"
-      SPRING_DATASOURCE_PASSWORD: "petclinic"
-      SPRING_SQL_INIT_MODE: "always"
-      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: "health,info,metrics"
-      MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED: "true"
-      SERVER_PORT: "8080"
-    ports:
-      - "8086:8080"
-    restart: unless-stopped
-
-volumes:
-  mysql-data-prod:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -ppetclinic --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
