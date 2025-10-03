@@ -228,19 +228,32 @@ pipeline {
       }
     }
     
-    stage('Workspace clean') {
+    stage('Workspace clean for Release') {
       when {
         anyOf {
-          changeset glob: 'appspec.yml'
-          changeset glob: 'scripts/**'
+          changeset comparator: 'GLOB',  pattern: 'appspec.yml'
+          changeset comparator: 'GLOB',  pattern: 'scripts/**'
+          changeset comparator: 'GLOB',  pattern: 'docker-compose.prod.yml'
+          changeset comparator: 'GLOB',  pattern: 'release.env'
         }
       }
       steps {
         deleteDir()
-        // if you want a fully fresh clone:
         checkout scm
+        // normalize CRLF -> LF before zipping
+        powershell '''
+          $files = @(
+            'appspec.yml',
+            'docker-compose.prod.yml',
+            'release.env'
+          ) + (Get-ChildItem -Path 'scripts' -Filter '*.sh' -Recurse | ForEach-Object { $_.FullName })
+          foreach ($f in $files) {
+            if (Test-Path $f) { (Get-Content $f) -join "`n" | Set-Content -Path $f -NoNewline -Encoding utf8 }
+          }
+        '''
       }
     }
+
 
 
 
