@@ -1,7 +1,7 @@
 version: "3.8"
 services:
   app:
-    image: "${IMAGE_REPO}:${IMAGE_TAG}"   # filled by ApplicationStart.ps1
+    image: "${IMAGE_REPO}:${IMAGE_TAG}"   
     depends_on:
       db:
         condition: service_healthy
@@ -13,18 +13,3 @@ services:
     ports:
       # Host 8086 -> container 8085  (Tomcat logs show 8085 inside)
       - "${SERVER_PORT:-8086}:8085"
-
-  db:
-    image: mysql:8.0
-    environment:
-      MYSQL_DATABASE: petclinic
-      MYSQL_USER: petclinic
-      MYSQL_PASSWORD: petclinic
-      MYSQL_ROOT_PASSWORD: rootpass
-    volumes:
-      - dbdata:/var/lib/mysql
-    healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -prootpass || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
