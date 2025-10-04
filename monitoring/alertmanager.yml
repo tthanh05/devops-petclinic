@@ -1,22 +1,21 @@
 route:
-  receiver: 'default'
-  group_by: ['alertname','severity']
+  receiver: team-slack
+  group_by: ['alertname','instance']
   group_wait: 15s
   group_interval: 1m
   repeat_interval: 2h
 
 receivers:
-  - name: 'default'
+  - name: team-slack
     slack_configs:
       - api_url: '${SLACK_WEBHOOK_URL}'
         send_resolved: true
-        channel: '#alerts'
-        title: '[Petclinic] {{ .CommonLabels.severity | toUpper }}: {{ .CommonAnnotations.summary }}'
-        text: >
-          {{ range .Alerts }}
-          *{{ .Labels.alertname }}* on *{{ .Labels.instance }}*
-          {{ .Annotations.description }}
-          {{ end }}
+        channel: '#petclinic-alerts'
+        title: '[Petclinic {{ .Status | toUpper }}] {{ .CommonLabels.alertname }} on {{ .CommonLabels.instance }}'
+        text: |
+          *Severity:* {{ .CommonLabels.severity | default "info" }}
+          *Summary:*  {{ .CommonAnnotations.summary }}
+          *Details:*  {{ .CommonAnnotations.description }}
 
     # Uncomment to use email instead of Slack
     # email_configs:
