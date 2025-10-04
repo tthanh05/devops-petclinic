@@ -29,10 +29,16 @@ services:
 
   alertmanager:
     image: prom/alertmanager:v0.27.0
+    env_file:
+      - /opt/monitoring/secrets/alertmanager.env
     container_name: alertmanager
     restart: unless-stopped
     ports:
       - "9093:9093"
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+      - --config.expand-env 
     volumes:
       - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
     environment:
