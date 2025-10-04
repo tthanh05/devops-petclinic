@@ -32,6 +32,12 @@ pipeline {
     HEALTH_INTERVAL_SEC   = '5'
   }
 
+  // ----- Monitoring -----
+  MON_PROM_READY_URL = 'http://prometheus.your.prod:9090/-/ready' // or http://<EC2 Public IP>:9090/-/ready
+  RUN_DRILL = 'true'              // set 'false' to skip
+  EC2_INSTANCE_ID = 'i-0ca65288292868412'  // product instance id
+
+
   stages {
     stage('Workspace clean') { 
       steps { deleteDir(); checkout scm } }
@@ -298,7 +304,7 @@ pipeline {
           
             rem ===== package and upload bundle for CodeDeploy =====
             if not exist codedeploy mkdir codedeploy
-            powershell -NoProfile -Command "Compress-Archive -Path appspec.yml,scripts,docker-compose.prod.yml,release.env -DestinationPath codedeploy\\petclinic-%IMAGE_TAG%.zip -Force"
+            powershell -NoProfile -Command "Compress-Archive -Path appspec.yml,scripts,monitoring,docker-compose.prod.yml,release.env -DestinationPath codedeploy\\petclinic-%IMAGE_TAG%.zip -Force"
           
             aws s3 cp codedeploy\\petclinic-%IMAGE_TAG%.zip s3://%S3_BUCKET%/revisions/petclinic-%IMAGE_TAG%.zip --region %AWS_REGION%
             if errorlevel 1 exit /b 1
@@ -318,6 +324,41 @@ pipeline {
       }
     }
 
+    // ==================== MONITORING & ALERTING ====================
+    stage('Monitoring & Alerting (Prometheus / Alertmanager)') {
+      when { branch 'main' }
+      steps {
+        withAWS(credentials: 'aws_prod', region: env.AWS_REGION) {
+          echo "Checking Prometheus readiness..."
+          // a tiny curl via SSM on the host (works even without public access)
+          bat """
+            aws ssm send-command ^
+              --instance-ids %EC2_INSTANCE_ID% ^
+              --document-name AWS-RunShellScript ^
+              --parameters commands="curl -sf http://localhost:9090/-/ready" ^
+              --query 'Command.CommandId' --output text
+          """
+          echo "Prometheus readiness command sent."
+    
+          script {
+            if (env.RUN_DRILL?.toBoolean()) {
+              echo "Running incident drill: stopping app for ~60s to trigger alerts..."
+              bat """
+                aws ssm send-command ^
+                  --instance-ids %EC2_INSTANCE_ID% ^
+                  --document-name AWS-RunShellScript ^
+                  --parameters commands="docker stop \$(docker ps --filter name=deployment-archive-app-1 -q) || true; sleep 60; docker start \$(docker ps -a --filter name=deployment-archive-app-1 -q) || true" ^
+                  --query 'Command.CommandId' --output text
+              """
+              echo "Drill submitted. Alerts should fire (InstanceDown/HighErrorRate) and then resolve after restart."
+            } 
+            else {
+              echo "RUN_DRILL=false -> skipping incident drill."
+            }
+          }
+        }
+      }
+    }
   }
 
   post {
