@@ -18,8 +18,8 @@ pipeline {
 
     // ----- AWS (Release via CodeDeploy) -----
     AWS_DEFAULT_REGION = 'ap-southeast-2'
-    S3_BUCKET          = 'petclinic-codedeploy-tthanh-ap-southeast-2'
-    APP_NAME          = 'Petclinic'           // CodeDeploy application name
+    S3_BUCKET = 'petclinic-codedeploy-tthanh-ap-southeast-2'
+    APP_NAME_AWS  = 'Petclinic'           // CodeDeploy application name
     DEPLOYMENT_GROUP  = 'Production'          // CodeDeploy deployment group name
 
     // ----- Staging (Compose) -----
@@ -371,7 +371,7 @@ pipeline {
           // --- Create CodeDeploy deployment ---
           bat '''
             aws deploy create-deployment ^
-              --application-name "%APP_NAME%" ^
+              --application-name "%APP_NAME_AWS%" ^
               --deployment-group-name "%DEPLOYMENT_GROUP%" ^
               --s3-location bucket=%S3_BUCKET%,bundleType=zip,key=revisions/petclinic-%GIT_TAG%.zip ^
               --region %AWS_REGION%
