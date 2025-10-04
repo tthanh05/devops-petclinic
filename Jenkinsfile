@@ -329,46 +329,52 @@ pipeline {
             setlocal EnableDelayedExpansion
             set AWS_REGION=%AWS_REGION%
             set IMAGE_TAG=%RELEASE_TAG%
-    
+          
             rem ===== derive account & ECR host =====
             for /f %%A in ('aws sts get-caller-identity --query Account --output text') do set AWS_ACCOUNT=%%A
             set ECR_HOST=%AWS_ACCOUNT%.dkr.ecr.%AWS_REGION%.amazonaws.com
             set IMAGE_REPO=%ECR_HOST%/petclinic
-    
-            rem ===== ensure repo exists =====
-            aws ecr describe-repositories --repository-names petclinic --region %AWS_REGION% 1>NUL 2>NUL || ^
-            aws ecr create-repository --repository-name petclinic --region %AWS_REGION%
-    
-            rem ===== login, build, tag, push =====
-            aws ecr get-login-password --region %AWS_REGION% ^| docker login --username AWS --password-stdin %ECR_HOST%
+          
+            rem ===== ensure repo exists (no fragile caret) =====
+            aws ecr describe-repositories --repository-name petclinic --region %AWS_REGION% >NUL 2>&1
+            if errorlevel 1 (
+              aws ecr create-repository --repository-name petclinic --region %AWS_REGION%
+              if errorlevel 1 exit /b 1
+            )
+          
+            rem ===== ECR docker login (no pipe) =====
+            for /f "usebackq tokens=* delims=" %%P in (`aws ecr get-login-password --region %AWS_REGION%`) do set ECRPWD=%%P
+            echo.!ECRPWD!> .ecrpwd.txt
+            type .ecrpwd.txt | docker login --username AWS --password-stdin %ECR_HOST%
+            del /q .ecrpwd.txt
             if errorlevel 1 exit /b 1
-    
+          
+            rem ===== build / tag / push =====
             docker build -t spring-petclinic:%IMAGE_TAG% .
             if errorlevel 1 exit /b 1
-    
+          
             docker tag spring-petclinic:%IMAGE_TAG% %IMAGE_REPO%:%IMAGE_TAG%
             docker push %IMAGE_REPO%:%IMAGE_TAG%
             if errorlevel 1 exit /b 1
-    
-            rem ===== capture immutable digest (note the =) =====
+          
+            rem ===== capture immutable digest =====
             for /f %%D in ('aws ecr describe-images --repository-name petclinic --image-ids imageTag=%IMAGE_TAG% --query "imageDetails[0].imageDigest" --output text --region %AWS_REGION%') do set IMAGE_SHA=%%D
-    
-            rem ===== write release variables =====
+          
+            rem ===== write release variables (read by EC2 scripts) =====
             >  release.env echo IMAGE_REPO=%IMAGE_REPO%
             >> release.env echo IMAGE_TAG=%IMAGE_TAG%
             >> release.env echo IMAGE_DIGEST=%IMAGE_REPO%@%IMAGE_SHA%
             >> release.env echo AWS_REGION=%AWS_REGION%
             >> release.env echo SERVER_PORT=8086
-    
-            rem ===== package deploy bundle =====
+          
+            rem ===== package and upload bundle for CodeDeploy =====
             if not exist codedeploy mkdir codedeploy
             powershell -NoProfile -Command "Compress-Archive -Path appspec.yml,scripts,docker-compose.prod.yml,release.env -DestinationPath codedeploy\\petclinic-%IMAGE_TAG%.zip -Force"
-    
-            rem ===== upload to S3 =====
+          
             aws s3 cp codedeploy\\petclinic-%IMAGE_TAG%.zip s3://%S3_BUCKET%/revisions/petclinic-%IMAGE_TAG%.zip --region %AWS_REGION%
             if errorlevel 1 exit /b 1
-    
-            rem ===== create the CodeDeploy deployment =====
+          
+            rem ===== create CodeDeploy deployment =====
             aws deploy create-deployment ^
               --application-name "%APP_NAME_AWS%" ^
               --deployment-group-name "%DEPLOYMENT_GROUP%" ^
