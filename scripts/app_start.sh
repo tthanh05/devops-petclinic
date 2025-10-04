@@ -1,20 +1,27 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
-APP_DIR="/opt/petclinic"
-cd "$APP_DIR"
+echo "=== [ApplicationStart] $(date -Is) ==="
 
-# Load release variables written by Jenkins
-source ./release.env
+REV_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+set -a
+. "$REV_ROOT/release.env"
+set +a
 
-# ECR login (region from release.env)
-aws ecr get-login-password --region "${AWS_REGION:-ap-southeast-2}" \
-  | docker login --username AWS --password-stdin "${IMAGE_REPO%/*}"
+ECR_HOST="${IMAGE_REPO%%/*}"
 
-# Choose immutable digest if present, else fall back to tag
-IMG="${IMAGE_DIGEST:-${IMAGE_REPO}:${IMAGE_TAG}}"
+# ECR login using the instance role
+aws ecr get-login-password --region "$AWS_REGION" \
+| docker login --username AWS --password-stdin "$ECR_HOST" >/dev/null
 
-# Pull and start
-docker pull "$IMG"
-docker compose --env-file release.env -f docker-compose.prod.yml up -d --remove-orphans
+# Choose image ref
+IMAGE_REF="${IMAGE_REPO}:${IMAGE_TAG}"
+if [[ "${IMAGE_DIGEST:-}" =~ @sha256:[0-9a-f]{64}$ ]]; then
+  IMAGE_REF="$IMAGE_DIGEST"
+fi
+echo "Using image: $IMAGE_REF"
 
-echo "=== [ApplicationStart] $(date -Is) done ==="
+export IMAGE_REF
+docker compose --env-file "$REV_ROOT/release.env" -f "$REV_ROOT/docker-compose.prod.yml" pull app || true
+docker compose --env-file "$REV_ROOT/release.env" -f "$REV_ROOT/docker-compose.prod.yml" up -d
+
+echo "=== [ApplicationStart] done ==="
