@@ -17,9 +17,9 @@ pipeline {
     DC_CACHE = 'C:\\depcheck-cache'
 
     // ----- AWS (Release via CodeDeploy) -----
-    AWS_DEFAULT_REGION = 'ap-southeast-2'
+    AWS_REGION = 'ap-southeast-2'
     S3_BUCKET = 'petclinic-codedeploy-tthanh-ap-southeast-2'
-    APP_NAME_AWS  = 'Petclinic'           // CodeDeploy application name
+    APP_NAME_AWS  = 'PetclinicApp'           // CodeDeploy application name
     DEPLOYMENT_GROUP  = 'Production'          // CodeDeploy deployment group name
 
     // ----- Staging (Compose) -----
@@ -271,8 +271,12 @@ pipeline {
     stage('Release: Production (AWS CodeDeploy)') {
       when { branch 'main' }
       steps {
-        // If you use the AWS Steps plugin, keep this. Otherwise remove withAWS and keep the code inside.
-        withAWS(credentials: 'aws_prod', region: env.AWS_DEFAULT_REGION) {
+        script {
+          // Choose a release tag: use env.GIT_TAG if set, else the Jenkins build number
+          env.RELEASE_TAG = (env.GIT_TAG?.trim()) ?: env.BUILD_NUMBER
+        }
+        
+        withAWS(credentials: 'aws_prod', region: env.AWS_REGION) {
     
           // // Build the exact versioned image locally (optional for CodeDeploy itself)
           // bat 'docker build -t spring-petclinic:%VERSION% .'
@@ -321,25 +325,23 @@ pipeline {
           //   }
           //   Write-Error 'Timed out waiting for CodeDeploy deployment to finish.'
           // ''')
-          bat '''
+          bat """
             setlocal EnableDelayedExpansion
+            set AWS_REGION=%AWS_REGION%
+            set IMAGE_TAG=%RELEASE_TAG%
     
             rem ===== derive account & ECR host =====
             for /f %%A in ('aws sts get-caller-identity --query Account --output text') do set AWS_ACCOUNT=%%A
             set ECR_HOST=%AWS_ACCOUNT%.dkr.ecr.%AWS_REGION%.amazonaws.com
             set IMAGE_REPO=%ECR_HOST%/petclinic
     
-            rem ===== choose a release tag =====
-            if "%GIT_TAG%"=="" set GIT_TAG=%BUILD_NUMBER%
-            set IMAGE_TAG=%GIT_TAG%
-    
-            rem ===== ensure repo exists (no-op if present) =====
+            rem ===== ensure repo exists =====
             aws ecr describe-repositories --repository-names petclinic --region %AWS_REGION% 1>NUL 2>NUL || ^
             aws ecr create-repository --repository-name petclinic --region %AWS_REGION%
     
             rem ===== login, build, tag, push =====
-            aws ecr get-login-password --region %AWS_REGION% ^
-              | docker login --username AWS --password-stdin %ECR_HOST%
+            aws ecr get-login-password --region %AWS_REGION% ^| docker login --username AWS --password-stdin %ECR_HOST%
+            if errorlevel 1 exit /b 1
     
             docker build -t spring-petclinic:%IMAGE_TAG% .
             if errorlevel 1 exit /b 1
@@ -348,34 +350,31 @@ pipeline {
             docker push %IMAGE_REPO%:%IMAGE_TAG%
             if errorlevel 1 exit /b 1
     
-            rem ===== capture immutable digest =====
+            rem ===== capture immutable digest (note the =) =====
             for /f %%D in ('aws ecr describe-images --repository-name petclinic --image-ids imageTag=%IMAGE_TAG% --query "imageDetails[0].imageDigest" --output text --region %AWS_REGION%') do set IMAGE_SHA=%%D
     
-            rem ===== write release variables read on the EC2 host =====
+            rem ===== write release variables =====
             >  release.env echo IMAGE_REPO=%IMAGE_REPO%
             >> release.env echo IMAGE_TAG=%IMAGE_TAG%
             >> release.env echo IMAGE_DIGEST=%IMAGE_REPO%@%IMAGE_SHA%
             >> release.env echo AWS_REGION=%AWS_REGION%
             >> release.env echo SERVER_PORT=8086
     
-            rem ===== package deploy bundle (no jar/image; we pull image from ECR) =====
+            rem ===== package deploy bundle =====
             if not exist codedeploy mkdir codedeploy
             powershell -NoProfile -Command "Compress-Archive -Path appspec.yml,scripts,docker-compose.prod.yml,release.env -DestinationPath codedeploy\\petclinic-%IMAGE_TAG%.zip -Force"
     
             rem ===== upload to S3 =====
-            set BUNDLE_KEY=revisions/petclinic-%IMAGE_TAG%.zip
-            aws s3 cp codedeploy\\petclinic-%IMAGE_TAG%.zip s3://%S3_BUCKET%/%BUNDLE_KEY% --region %AWS_REGION%
+            aws s3 cp codedeploy\\petclinic-%IMAGE_TAG%.zip s3://%S3_BUCKET%/revisions/petclinic-%IMAGE_TAG%.zip --region %AWS_REGION%
             if errorlevel 1 exit /b 1
-          '''
     
-          // --- Create CodeDeploy deployment ---
-          bat '''
+            rem ===== create the CodeDeploy deployment =====
             aws deploy create-deployment ^
               --application-name "%APP_NAME_AWS%" ^
               --deployment-group-name "%DEPLOYMENT_GROUP%" ^
-              --s3-location bucket=%S3_BUCKET%,bundleType=zip,key=revisions/petclinic-%GIT_TAG%.zip ^
+              --s3-location bucket=%S3_BUCKET%,bundleType=zip,key=revisions/petclinic-%IMAGE_TAG%.zip ^
               --region %AWS_REGION%
-          '''
+          """
         }
       }
       post {
