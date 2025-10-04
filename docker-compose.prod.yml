@@ -1,7 +1,7 @@
 version: "3.8"
 services:
   app:
-    image: "spring-petclinic:${IMAGE_TAG}"   # filled by ApplicationStart.ps1
+    image: "${IMAGE_REPO}:${IMAGE_TAG}"   # filled by ApplicationStart.ps1
     depends_on:
       db:
         condition: service_healthy
@@ -15,7 +15,7 @@ services:
       - "${SERVER_PORT:-8086}:8085"
 
   db:
-    image: mysql:8.0
+    image: "${IMAGE_DIGEST}"
     environment:
       MYSQL_DATABASE: petclinic
       MYSQL_USER: petclinic
