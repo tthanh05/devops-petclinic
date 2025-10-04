@@ -1,15 +1,16 @@
-version: "3.8"
+# version: "3.8"
 services:
   app:
     image: "${IMAGE_REPO}:${IMAGE_TAG}"   
-    depends_on:
-      db:
-        condition: service_healthy
+    # depends_on:
+    #   db:
+    #     condition: service_healthy
     environment:
-      SPRING_PROFILES_ACTIVE: "mysql"
-      SPRING_DATASOURCE_URL: "jdbc:mysql://db:3306/petclinic?useUnicode=true&characterEncoding=utf8&useSSL=false&allowPublicKeyRetrieval=true"
-      SPRING_DATASOURCE_USERNAME: "petclinic"
-      SPRING_DATASOURCE_PASSWORD: "petclinic"
+      SPRING_PROFILES_ACTIVE: default
+      # SPRING_DATASOURCE_URL: "jdbc:mysql://db:3306/petclinic?useUnicode=true&characterEncoding=utf8&useSSL=false&allowPublicKeyRetrieval=true"
+      # SPRING_DATASOURCE_USERNAME: "petclinic"
+      # SPRING_DATASOURCE_PASSWORD: "petclinic"
     ports:
       # Host 8086 -> container 8085  (Tomcat logs show 8085 inside)
       - "${SERVER_PORT:-8086}:8085"
+    restart: unless-stopped
