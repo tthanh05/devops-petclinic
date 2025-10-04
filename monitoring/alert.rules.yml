@@ -1,0 +1,46 @@
+groups:
+- name: petclinic.rules
+  rules:
+  - alert: InstanceDown
+    expr: up{job=~"petclinic-app|node"} == 0
+    for: 1m
+    labels:
+      severity: critical
+    annotations:
+      summary: "Target down"
+      description: "Prometheus cannot scrape {{ $labels.job }} on {{ $labels.instance }} for 1m."
+
+  - alert: HighErrorRate
+    # ratio of HTTP 5xx to all requests over 5m
+    expr: |
+      sum(rate(http_server_requests_seconds_count{status=~"5.."}[5m]))
+        /
+      sum(rate(http_server_requests_seconds_count[5m]))
+        > 0.05
+    for: 5m
+    labels:
+      severity: critical
+    annotations:
+      summary: "High 5xx error rate"
+      description: "Error ratio > 5% for 5m ({{$value | printf \"%.2f\"}})."
+
+  - alert: SlowResponses
+    # 95th percentile over 5m exceeds 1.5s
+    expr: |
+      histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket[5m])) by (le))
+        > 1.5
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: "High latency (p95 > 1.5s)"
+      description: "p95 response time over last 5m is {{ $value | printf \"%.2f\" }}s"
+
+  - alert: HighCPULoad
+    expr: 100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[2m])) * 100) > 85
+    for: 10m
+    labels:
+      severity: warning
+    annotations:
+      summary: "High CPU util (>85%)"
+      description: "CPU on {{ $labels.instance }} over 85% for 10m"
