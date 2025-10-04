@@ -15,14 +15,16 @@ services:
       - "${SERVER_PORT:-8086}:8085"
 
   db:
-    image: "${IMAGE_DIGEST}"
+    image: mysql:8.0
     environment:
       MYSQL_DATABASE: petclinic
       MYSQL_USER: petclinic
       MYSQL_PASSWORD: petclinic
-      MYSQL_ROOT_PASSWORD: root
+      MYSQL_ROOT_PASSWORD: rootpass
+    volumes:
+      - dbdata:/var/lib/mysql
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h localhost -ppetclinic --silent"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -prootpass || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
