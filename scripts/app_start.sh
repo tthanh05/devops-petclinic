@@ -1,15 +1,20 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
-
-echo "=== [ApplicationStart] $(date -Is) ==="
-
 APP_DIR="/opt/petclinic"
 cd "$APP_DIR"
 
-# Boot the stack
-/usr/bin/docker compose --env-file release.env -f docker-compose.prod.yml up -d
+# Load release variables written by Jenkins
+source ./release.env
 
-# Optional: wait a few seconds before health checks
-sleep 5
+# ECR login (region from release.env)
+aws ecr get-login-password --region "${AWS_REGION:-ap-southeast-2}" \
+  | docker login --username AWS --password-stdin "${IMAGE_REPO%/*}"
 
-echo "=== [ApplicationStart] done ==="
+# Choose immutable digest if present, else fall back to tag
+IMG="${IMAGE_DIGEST:-${IMAGE_REPO}:${IMAGE_TAG}}"
+
+# Pull and start
+docker pull "$IMG"
+docker compose --env-file release.env -f docker-compose.prod.yml up -d --remove-orphans
+
+echo "=== [ApplicationStart] $(date -Is) done ==="
