@@ -13,7 +13,6 @@ pipeline {
     APP_NAME = 'spring-petclinic'
     GIT_SHA  = "${env.GIT_COMMIT?.take(7) ?: 'local'}"
     VERSION  = "${env.BUILD_NUMBER}-${GIT_SHA}"
-    // DC_CACHE = '.dc'
     DC_CACHE = 'C:\\depcheck-cache'
 
     // ----- AWS (Release via CodeDeploy) -----
@@ -34,13 +33,8 @@ pipeline {
   }
 
   stages {
-
     stage('Workspace clean') { 
       steps { deleteDir(); checkout scm } }
-
-    // stage('Checkout') {
-    //   steps { checkout scm }
-    // }
 
     stage('Build') {
       steps {
@@ -71,32 +65,6 @@ pipeline {
         }
       }
     }
-
-    // stage('Security: Dependency Scan (OWASP)') {
-    //   steps {
-    //     bat """
-    //       ${MVN} -DskipTests=true ^
-    //              org.owasp:dependency-check-maven:check ^
-    //              -DdataDirectory=%DC_CACHE% ^
-    //              -Dformat=ALL ^
-    //              -DfailBuildOnCVSS=7 ^
-    //              -Danalyzers.assembly.enabled=false ^
-    //              -DautoUpdate=true
-    //     """
-    //   }
-    //   post {
-    //     always {
-    //       archiveArtifacts artifacts: '''
-    //         target/dependency-check-report.html,
-    //         target/dependency-check-report.xml,
-    //         target/dependency-check-report.json,
-    //         target/dependency-check-junit.xml
-    //       '''.trim().replaceAll("\\s+"," "), fingerprint: true, allowEmptyArchive: true
-    //       publishHTML(target: [reportDir: 'target', reportFiles: 'dependency-check-report.html', reportName: 'OWASP Dependency-Check'])
-    //       junit testResults: 'target/dependency-check-junit.xml', allowEmptyResults: true
-    //     }
-    //   }
-    // }
 
     stage('Security: Dependency Scan (OWASP)') {
       steps {
@@ -277,54 +245,6 @@ pipeline {
         }
         
         withAWS(credentials: 'aws_prod', region: env.AWS_REGION) {
-    
-          // // Build the exact versioned image locally (optional for CodeDeploy itself)
-          // bat 'docker build -t spring-petclinic:%VERSION% .'
-    
-          // // Package the revision CodeDeploy will pull
-          // bat '''
-          //   if not exist codedeploy mkdir codedeploy
-          //   > release.env echo IMAGE_TAG=%VERSION%
-          //   >> release.env echo SERVER_PORT=8086
-          //   powershell -NoProfile -Command "Compress-Archive -Path appspec.yml,scripts,release.env,docker-compose.prod.yml -DestinationPath codedeploy\\petclinic-%VERSION%.zip -Force"
-          // '''
-    
-          // // Upload to S3
-          // bat 'aws s3 cp codedeploy\\petclinic-%VERSION%.zip s3://%S3_BUCKET%/revisions/petclinic-%VERSION%.zip --region %AWS_DEFAULT_REGION%'
-    
-          // // ---- Create deployment ----
-          // powershell('''
-          //   $depId = aws deploy create-deployment `
-          //     --application-name PetclinicApp `
-          //     --deployment-group-name Production `
-          //     --s3-location bucket=$env:S3_BUCKET,key=revisions/petclinic-$env:VERSION.zip,bundleType=zip `
-          //     --deployment-config-name CodeDeployDefault.AllAtOnce `
-          //     --auto-rollback-configuration enabled=true,events=DEPLOYMENT_FAILURE `
-          //     --region $env:AWS_DEFAULT_REGION `
-          //     --query deploymentId --output text
-          
-          //   if (-not $depId -or $depId -eq 'None') {
-          //     Write-Error 'Failed to create deployment (no deploymentId returned).'
-          //   }
-          //   Set-Content -Path dep_id.txt -Value $depId
-          //   Write-Host "DeploymentId=$depId"
-          // ''')
-    
-          // // ---- Poll deployment status ----
-          // powershell('''
-          //   $id = Get-Content dep_id.txt
-          //   for ($i=0; $i -lt 120; $i++) {
-          //     $st = aws deploy get-deployment `
-          //       --deployment-id $id `
-          //       --region $env:AWS_DEFAULT_REGION `
-          //       --query deploymentInfo.status --output text
-          //     Write-Host "Status: $st"
-          //     if ($st -eq 'Succeeded') { exit 0 }
-          //     if ($st -eq 'Failed')    { exit 1 }
-          //     Start-Sleep -Seconds 6
-          //   }
-          //   Write-Error 'Timed out waiting for CodeDeploy deployment to finish.'
-          // ''')
           bat """
             setlocal EnableDelayedExpansion
             set AWS_REGION=%AWS_REGION%
