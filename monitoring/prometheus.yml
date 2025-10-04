@@ -10,7 +10,7 @@ scrape_configs:
     metrics_path: /actuator/prometheus
     static_configs:
       # Prometheus runs on the same EC2 host; the app publishes on 8086
-      - targets: ['localhost:8086']
+      - targets: ['app:8086']
     relabel_configs:
       - source_labels: [__address__]
         regex: (.*)
@@ -19,7 +19,7 @@ scrape_configs:
 
   - job_name: 'node'
     static_configs:
-      - targets: ['localhost:9100']
+      - targets: ['node-exporter:9100']
 
   # Optional uptime probe (comment out if not using)
   # - job_name: 'blackbox'
