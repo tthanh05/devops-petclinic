@@ -24,4 +24,19 @@ export IMAGE_REF
 docker compose --env-file "$REV_ROOT/release.env" -f "$REV_ROOT/docker-compose.prod.yml" pull app || true
 docker compose --env-file "$REV_ROOT/release.env" -f "$REV_ROOT/docker-compose.prod.yml" up -d
 
+# ---- Monitoring stack (Prometheus + Alertmanager [+Grafana]) ----
+MON_DIR="$APP_DIR/monitoring"
+if [ -d "$MON_DIR" ]; then
+  echo "Starting monitoring stack..."
+  # Pass Slack webhook securely via env var file if present
+  if [ -f "$APP_DIR/monitoring.env" ]; then
+    set -a; source "$APP_DIR/monitoring.env"; set +a
+  fi
+  /usr/bin/docker compose -f "$MON_DIR/docker-compose.monitor.yml" up -d
+else
+  echo "Monitoring stack not found; skipping."
+fi
+
+sleep 5
+
 echo "=== [ApplicationStart] done ==="
