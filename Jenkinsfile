@@ -347,7 +347,7 @@ pipeline {
                   --instance-ids %EC2_INSTANCE_ID% ^
                   --document-name AWS-RunShellScript ^
                   --parameters commands="docker stop \$(docker ps --filter name=deployment-archive-app-1 -q) || true; sleep 60; docker start \$(docker ps -a --filter name=deployment-archive-app-1 -q) || true" ^
-                  --query 'Command.CommandId' --output text
+                  --query "Command.CommandId" --output text
               """
               echo "Drill submitted. Alerts should fire (InstanceDown/HighErrorRate) and then resolve after restart."
             } 
