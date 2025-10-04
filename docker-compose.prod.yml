@@ -14,3 +14,10 @@ services:
       # Host 8086 -> container 8085  (Tomcat logs show 8085 inside)
       - "${SERVER_PORT:-8086}:8085"
     restart: unless-stopped
+    networks:
+      - monitoring
+    
+  networks:
+    monitoring:
+      name: monitoring
+      driver: bridge
