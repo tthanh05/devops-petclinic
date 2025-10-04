@@ -30,13 +30,12 @@ pipeline {
     HEALTH_URL   = 'http://localhost:8100/actuator/health'
     HEALTH_MAX_WAIT_SEC   = '120'
     HEALTH_INTERVAL_SEC   = '5'
+
+    // ----- Monitoring -----
+    MON_PROM_READY_URL = 'http://prometheus.your.prod:9090/-/ready' // or http://<EC2 Public IP>:9090/-/ready
+    RUN_DRILL = 'true'              // set 'false' to skip
+    EC2_INSTANCE_ID = 'i-0ca65288292868412'  // product instance id
   }
-
-  // ----- Monitoring -----
-  MON_PROM_READY_URL = 'http://prometheus.your.prod:9090/-/ready' // or http://<EC2 Public IP>:9090/-/ready
-  RUN_DRILL = 'true'              // set 'false' to skip
-  EC2_INSTANCE_ID = 'i-0ca65288292868412'  // product instance id
-
 
   stages {
     stage('Workspace clean') { 
