@@ -4,6 +4,8 @@ services:
     image: prom/node-exporter:v1.8.1
     container_name: node-exporter
     network_mode: host
+    networks:
+      - monitoring
     pid: host
     restart: unless-stopped
     command:
@@ -17,6 +19,8 @@ services:
     restart: unless-stopped
     ports:
       - "9090:9090"
+    networks:
+      - monitoring
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./alert.rules.yml:/etc/prometheus/alert.rules.yml:ro
@@ -59,3 +63,7 @@ services:
       - grafana:/var/lib/grafana
 volumes:
   grafana:
+
+networks:
+  monitoring:
+    external: true 
