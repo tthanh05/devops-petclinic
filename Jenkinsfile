@@ -358,11 +358,11 @@ pipeline {
             if errorlevel 1 exit /b 1
           
             rem ===== capture immutable digest =====
-            for /F %%D in ('
+            for /f %%D in ('
               aws ecr describe-images --repository-name petclinic ^
                 --image-ids imageTag=%IMAGE_TAG% ^
                 --query "imageDetails[0].imageDigest" --output text --region %AWS_REGION%
-            ') do set IMAGE_SHA=%%D
+            ') do set "IMAGE_SHA=%%D"
           
             rem ===== write release variables (read by EC2 scripts) =====
             >  release.env echo IMAGE_REPO=%IMAGE_REPO%
