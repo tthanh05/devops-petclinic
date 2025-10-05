@@ -8,11 +8,10 @@ route:
 receivers:
   - name: 'slack'
     slack_configs:
-      - api_url: '${SLACK_WEBHOOK_URL}'
+      - api_url: 'https://hooks.slack.com/services/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'
         send_resolved: true
-        # channel: '#petclinic-alerts'
-        channel:  ${SLACK_CHANNEL}
-        username: ${SLACK_USERNAME}
+        channel:  '#new-channel'
+        username: 'petclinic-alerts'
         title: '[Petclinic {{ .Status | toUpper }}] {{ .CommonLabels.alertname }} on {{ .CommonLabels.instance }}'
         text: |
           *Severity:* {{ .CommonLabels.severity | default "info" }}
