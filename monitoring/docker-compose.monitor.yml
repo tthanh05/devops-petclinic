@@ -43,6 +43,7 @@ services:
       - --storage.path=/alertmanager
       - --web.listen-address=:9093
       - --config.expand-env 
+      - --log.level=info
     volumes:
       - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
     environment:
