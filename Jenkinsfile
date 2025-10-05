@@ -147,7 +147,6 @@ pipeline {
       }
     }
 
-    // ==================== STAGING DEPLOY ====================
     stage('Deploy: Staging (Docker Compose on 8085 with Health Gate + Rollback)') {
       steps {
         bat 'docker --version'
@@ -162,7 +161,6 @@ pipeline {
           docker image tag %APP_NAME%:%VERSION% %APP_NAME%:%STAGING_IMAGE_TAG%
         """
 
-        // free port 8085 if anything (any stack) is publishing it
         powershell('''
           $port = [int]$env:STAGING_PORT
           $ids = (docker ps --filter "publish=$port" -q) 2>$null
@@ -175,11 +173,9 @@ pipeline {
           } else { Write-Host "Port $port appears free." }
         ''')
 
-        // ensure THIS stack is down, then up (fixed project name)
         bat "docker compose -p %COMPOSE_PROJECT_NAME% -f %DOCKER_COMPOSE_FILE% down --remove-orphans"
         bat "docker compose -p %COMPOSE_PROJECT_NAME% -f %DOCKER_COMPOSE_FILE% up -d --remove-orphans"
 
-        // health gate
         powershell('''
           $max = [int]$env:HEALTH_MAX_WAIT_SEC
           $interval = [int]$env:HEALTH_INTERVAL_SEC
@@ -240,7 +236,6 @@ pipeline {
       }
     }
     
-    // ==================== PRODUCTION RELEASE (AWS CodeDeploy) ====================
     stage('Release: Production (AWS CodeDeploy)') {
       when { branch 'main' }
       steps {
@@ -323,7 +318,6 @@ pipeline {
       }
     }
 
-    // ==================== MONITORING & ALERTING ====================
     stage('Monitoring & Alerting (Prometheus / Alertmanager)') {
       when { branch 'main' }
       steps {
