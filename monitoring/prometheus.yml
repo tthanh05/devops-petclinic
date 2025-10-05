@@ -2,6 +2,12 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+# Where to send firing alerts
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['localhost:9093']
+        
 rule_files:
   - /etc/prometheus/alert.rules.yml
 
