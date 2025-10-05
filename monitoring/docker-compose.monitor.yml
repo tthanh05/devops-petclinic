@@ -33,7 +33,7 @@ services:
   alertmanager:
     image: prom/alertmanager:v0.27.0
     env_file:
-      - /opt/monitoring/secrets/alertmanager.env
+      - ./secrets/alertmanager.env
     container_name: alertmanager
     restart: unless-stopped
     ports:
