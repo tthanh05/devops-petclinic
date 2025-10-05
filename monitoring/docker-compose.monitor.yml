@@ -41,8 +41,7 @@ services:
     command:
       - --config.file=/etc/alertmanager/alertmanager.yml
       - --storage.path=/alertmanager
-      - --web.listen-address=:9093
-      - --config.expand-env 
+      - --web.listen-address=:9093 
       - --log.level=info
     volumes:
       - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
